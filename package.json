@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "description": "MCP server that gates prompts: rewrites, shows original/rewritten/cancel, and returns only the approved prompt.",
   "type": "module",
-  "private": true,
+  "license": "Apache-2.0",
   "bin": {
     "universal-prompt-gate-mcp": "./build/index.js"
   },
   "main": "./build/index.js",
   "files": [
-    "build"
+    "build",
+    "LICENSE",
+    "README.md",
+    ".env.example"
   ],
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
@@ -28,6 +31,23 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "prompt",
+    "prompt-engineering",
+    "rewrite",
+    "gate",
+    "llm",
+    "llama-cpp",
+    "elicitation",
+    "claude",
+    "coding-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nbhson/tool-prompt-rewrite-mcp.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

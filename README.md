@@ -458,4 +458,4 @@ tool-prompt-rewrite-mcp/
 
 ## License
 
-TBD
+[Apache-2.0](LICENSE)
