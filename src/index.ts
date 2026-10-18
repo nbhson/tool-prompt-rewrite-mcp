@@ -20,6 +20,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig } from './config.js';
 import { createLogger, type Logger } from './logger.js';
@@ -70,16 +71,26 @@ export async function buildServer(
     { capabilities: { tools: {} } }
   );
 
-  // Capability detection uses the client's declared capabilities once the
-  // protocol is initialized. Until then we report the conservative default
-  // (no elicitation, no mandatory gating). This is the "no unverified
-  // claims" principle.
+  // Capability detection: report only what the client actually declared in
+  // the MCP `initialize` request (server.getClientCapabilities()). Until
+  // initialization completes, fall back to the conservative default — the
+  // "no unverified claims" principle. `get_client_capabilities` and the
+  // gate tool both re-check on every call, so the moment the client has
+  // initialized, elicitation flips on without a server restart.
   const caps = {
     current: detectCapabilities({}),
     sessionId,
   };
 
-  const detect = (): ClientCapabilities => caps.current;
+  const detect = (): ClientCapabilities => {
+    // The high-level McpServer delegates raw protocol state to `server.server`
+    // (a LowLevelServer), where the SDK stores the client's capabilities
+    // reported during initialize.
+    const clientCaps = (server.server as Server).getClientCapabilities?.();
+    if (clientCaps === undefined) return caps.current;
+    caps.current = detectCapabilities(clientCaps);
+    return caps.current;
+  };
 
   registerAllTools({
     server,
@@ -89,13 +100,6 @@ export async function buildServer(
     llmConfig: cfg.llm,
     policyFile: cfg.policyFile,
   });
-
-  // When the client sends initialize, the SDK calls oninitialize; we can't
-  // easily override it here, so instead we lazily refresh on first tool call
-  // via the session. For now, the conservative default is safe: any
-  // client that actually supports elicitation will surface it through the
-  // MCP protocol negotiation; we report "false" until then.
-  // (TODO: wire real clientCapabilities from the SDK's initialize result.)
 
   log.info('server: built', {
     transport: cfg.transport,

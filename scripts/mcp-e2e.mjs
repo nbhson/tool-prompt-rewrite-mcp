@@ -20,7 +20,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const mode = process.argv[2] === 'gate' ? 'gate' : 'rewrite';
+// Modes:
+//  - caps        : declare NO elicitation -> get_client_capabilities must say false
+//  - caps-decl   : declare elicitation.form -> get_client_capabilities must say true
+//  - rewrite     : test rewrite_prompt
+//  - gate        : test review_and_select_prompt (auto-answers elicitation)
+const mode = process.argv[2] || 'rewrite';
+const declareElicitation = mode !== 'caps';
 
 const child = spawn('node', [join(__dirname, '..', 'build', 'index.js')], {
   stdio: ['pipe', 'pipe', 'inherit'],
@@ -89,14 +95,30 @@ const secs = () => ((Date.now() - T0) / 1000).toFixed(1);
 try {
   const init = await rpc('initialize', {
     protocolVersion: '2024-11-05',
-    capabilities: { elicitation: { form: {} } },
+    capabilities: declareElicitation ? { elicitation: { form: {} } } : {},
     clientInfo: { name: 'e2e-test', version: '1.0.0' },
   });
-  console.log(`[${secs()}s] initialized: ${init.serverInfo?.name} v${init.serverInfo?.version}`);
+  console.log(`[${secs()}s] initialized: ${init.serverInfo?.name} v${init.serverInfo?.version} (declared elicitation: ${declareElicitation})`);
   notify('notifications/initialized', {});
 
   const tools = await rpc('tools/list', {});
   console.log(`[${secs()}s] tools: ${tools.tools.map((t) => t.name).join(', ')}`);
+
+  if (mode === 'caps' || mode === 'caps-decl') {
+    const r = await rpc('tools/call', { name: 'get_client_capabilities', arguments: {} });
+    console.log(`\n=== [${secs()}s] get_client_capabilities ===`);
+    console.log(JSON.stringify(r.structuredContent, null, 2));
+    const supported = r.structuredContent?.elicitation_supported;
+    const expect = mode === 'caps-decl' ? true : false;
+    if (supported !== expect) {
+      console.error(`FAIL: expected elicitation_supported=${expect}, got ${supported}`);
+      child.kill();
+      process.exit(1);
+    }
+    console.log(`\n=== E2E ${mode} PASS in ${secs()}s ===`);
+    child.kill();
+    process.exit(0);
+  }
 
   if (mode === 'rewrite') {
     const r = await rpc('tools/call', {

@@ -1,5 +1,5 @@
 {
-  "mcpServers": {
+  "servers": {
     "prompt-gate": {
       "command": "node",
       "args": ["/Users/nguyenson/Github/_application/tool-prompt-rewrite-mcp/build/index.js"],
