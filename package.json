@@ -1,6 +1,6 @@
 {
   "name": "universal-prompt-gate-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server that gates prompts: rewrites, shows original/rewritten/cancel, and returns only the approved prompt.",
   "type": "module",
   "license": "Apache-2.0",
