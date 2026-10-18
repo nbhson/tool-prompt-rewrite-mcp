@@ -1,63 +1,63 @@
 # Universal Prompt Gate MCP Server
 
-> Một MCP server độc lập, hoạt động với nhiều coding agent, giúp người dùng xem xét và chọn prompt **trước khi** prompt được gửi đến LLM. Hỗ trợ viết lại prompt bằng LLM local, hiển thị 3 lựa chọn (gốc / đã sửa / hủy) và đảm bảo an toàn, linh hoạt cho agent.
+> A standalone MCP server that works with many coding agents. It lets users review and select a prompt **before** it is sent to an LLM. It rewrites prompts using a local LLM, displays 3 choices (original / rewritten / cancel), and keeps the flow safe and flexible for agents.
 
-## Ví dụ hoạt động (core use case)
+## Core use case
 
-Bạn nhập một prompt ngắn trong agent:
+You type a short prompt in an agent:
 
 ```
 "thông tin việt nam"
 ```
 
-MCP server rewrite (enrich) bằng LLM local (llama.cpp) thành:
+The MCP server rewrites (enriches) it with a local LLM (llama.cpp) into:
 
-> "Tóm tắt những tin tức mới nhất về Việt Nam hôm nay, phân loại theo kinh tế, chính trị, xã hội và công nghệ. Ưu tiên nguồn tin đáng tin cậy."
+> "Summarize the latest news about Vietnam today, categorized by economy, politics, society, and technology. Prioritize reliable sources."
 
-Trước khi prompt được forward tới LLM lớn, user được hiển thị 3 lựa chọn:
+Before the prompt is forwarded to the large LLM, the user is shown 3 choices:
 
 ```
-[1] Dùng prompt gốc        ("thông tin việt nam")
-[2] Dùng prompt đã viết lại (bản enrich phía trên)
-[3] Hủy                    (không gọi LLM)
+[1] Use original prompt     ("thông tin việt nam")
+[2] Use rewritten prompt    (the enriched version above)
+[3] Cancel                  (do not call the LLM)
 ```
 
-User chọn → prompt được chọn (hoặc trạng thái "cancelled") mới được gửi tới LLM lớn. Đây là **flow core** của server.
+The user picks one; the chosen prompt (or a "cancelled" state) is then sent to the large LLM. This is the **core flow** of the server.
 
-## Tính năng chính
+## Key features
 
-- **Prompt review & rewrite trước khi gửi**: mọi prompt đi qua "cổng kiểm duyệt", không tự động forward
-- **3 lựa chọn cho người dùng**: (1) dùng prompt gốc, (2) dùng prompt đã viết lại, (3) hủy
-- **Viết lại = Enrich ngữ cảnh** (context enrichment): bổ sung context, cấu trúc output, tiêu chí chất lượng thiếu — **không thêm ý mới**, tránh drift
-- **Viết lại bằng LLM local** (llama.cpp, OpenAI-compatible) — không gửi prompt ra cloud
-- **Hỗ trợ nhiều coding agent**: Claude Code, Cursor, Cline, Continue, OpenCode, …
-- **2 chế độ tích hợp**:
-  - **Standard MCP mode** — agent gọi tool, MCP server xử lý elicitation UI
-  - **Mandatory Gating** (khi agent hỗ trợ hooks) — prompt **không được** forward cho đến khi user xác nhận
-- **Đa nhà cung cấp LLM**: llama.cpp local, OpenAI (cloud), custom endpoint
-- **An toàn**: không log prompt đầy đủ, không thực thi shell từ prompt, redact secrets trong log, timeout & cancellation, không placeholder credentials
+- **Prompt review & rewrite before sending**: every prompt passes through a "gate"; nothing is forwarded automatically
+- **3 user choices**: (1) use the original, (2) use the rewritten, (3) cancel
+- **Rewrite = context enrichment**: adds missing context, output structure, and quality criteria — **no new intent**, avoiding drift
+- **Local LLM rewrite** (llama.cpp, OpenAI-compatible) — prompts never leave your machine
+- **Works with many coding agents**: Claude Code, Cursor, Cline, Continue, OpenCode, …
+- **2 integration modes**:
+  - **Standard MCP mode** — the agent calls the tool; the MCP server handles the elicitation UI
+  - **Mandatory Gating** (when the agent supports hooks) — the prompt is **not** forwarded until the user confirms
+- **Multi-provider LLM**: local llama.cpp, OpenAI (cloud), custom endpoint
+- **Safety**: no full-prompt logging, no shell execution from prompts, secrets redacted in logs, timeout & cancellation, no placeholder credentials
 
-## Các tool MCP
+## MCP tools
 
-| Tool                       | Input chính                                                                                   | Output chính                                                                                                                                                                                                     |
+| Tool                       | Main input                                                                                   | Main output                                                                                                                                                                                                     |
 | -------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rewrite_prompt`           | `prompt` (bắt buộc), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`) | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                            |
-| `review_and_select_prompt` | `prompt` (bắt buộc), `language`?, `context`?, `rewrite_level`?                                | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancel: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` |
+| `rewrite_prompt`           | `prompt` (required), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`) | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                            |
+| `review_and_select_prompt` | `prompt` (required), `language`?, `context`?, `rewrite_level`?                                | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancelled: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` |
 | `get_client_capabilities`  | —                                                                                             | `elicitation_supported`, `structured_elicitation_supported`, `transport`, `integration_mode`, `mandatory_gating_enforceable`                                                                                     |
 
-> **Nguyên tắc quan trọng:**
+> **Key principles:**
 >
-> - `rewrite_prompt` **không được** tự động claim rewritten prompt đã được approve — tool chỉ sinh bản rewrite.
-> - `review_and_select_prompt` mới là tool "gate" — chỉ return approved prompt sau khi user **chọn rõ**.
-> - **Cancel ≠ approved**: khi user chọn cancel, response là distinct protocol outcome (`status=cancelled`), **không** expose approved prompt.
-> - **Không silent fallback**: sau LLM error, **không** auto-chọn original. Trả về lỗi rõ ràng.
-> - **Không auto-select sau timeout**: user phải chọn thủ công, không được auto chọn mặc định.
+> - `rewrite_prompt` **never** claims the rewritten prompt is approved — it only produces a candidate rewrite.
+> - `review_and_select_prompt` is the "gate" tool — it returns an approved prompt only after the user **explicitly chooses**.
+> - **Cancel ≠ approved**: when the user cancels, the response is a distinct protocol outcome (`status=cancelled`) and **never** exposes an approved prompt.
+> - **No silent fallback**: on LLM error, the original is **not** auto-selected. A clear error is returned.
+> - **No auto-select on timeout**: the user must choose manually; nothing is auto-selected by default.
 
-Chi tiết schema & behavior: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Full schema & behavior: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Cài đặt
+## Installation
 
-Yêu cầu: **Node.js 20+**.
+Requires **Node.js 20+**.
 
 ```bash
 # 1. Clone & install
@@ -67,64 +67,64 @@ npm install
 # 2. Build
 npm run build
 
-# 3. Chạy với MCP Inspector (thử tool)
+# 3. Run with MCP Inspector (try the tools)
 npm run inspector
 ```
 
-## Cấu hình (biến môi trường)
+## Configuration (environment variables)
 
-Tạo file `.env` (xem `.env.example`) hoặc export trực tiếp:
+Create a `.env` file (see `.env.example`) or export the variables directly:
 
-| Biến                              | Default                                                | Mô tả                                                                                        |
-| --------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)                                                             |
-| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model                                                                                    |
-| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local, không cần thật)                                                              |
-| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                               | Timeout (ms) cho LLM (thinking models chạy CPU cần thời gian dài hơn) |
-| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                    | Số lần retry cho lỗi network (idempotent)                                              |
-| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Số token completion tối đa (thinking models cần budget lớn)                           |
-| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | `true`/`false` — bật/tắt reasoning (qwen3/llama.cpp thinking models)                   |
-| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào request body LLM (vd: `{"chat_format":"chatml"}`)                  |
-| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | `stdio` hoặc `http`                                                                     |
-| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud                                                                 |
-| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset: `news`/`code`/`research`, …) — override default strategy |
+| Variable                             | Default                                                | Description                                                                                        |
+| ------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `PROMPT_GATE_LLM_BASE_URL`           | `http://127.0.0.1:8080/v1`                             | LLM endpoint (OpenAI-compatible)                                                                   |
+| `PROMPT_GATE_LLM_MODEL`              | `qwen3.5-9b` _(example — verify against your llama.cpp version)_ | Model name                                                                                          |
+| `PROMPT_GATE_LLM_API_KEY`            | `local-dev-key`                                        | API key (for local dev, no real key needed)                                                        |
+| `PROMPT_GATE_TIMEOUT_MS`             | `180000`                                               | LLM timeout in ms (thinking models on CPU need more time)                                          |
+| `PROMPT_GATE_LLM_RETRY_MAX`          | `3`                                                    | Retry count for network errors (idempotent calls only)                                             |
+| `PROMPT_GATE_LLM_MAX_TOKENS`         | `2048`                                                 | Max completion tokens (thinking models need a larger budget)                                       |
+| `PROMPT_GATE_LLM_ENABLE_THINKING`    | _(unset)_                                              | `true`/`false` — enable/disable reasoning (qwen3 / llama.cpp thinking models)                       |
+| `PROMPT_GATE_LLM_EXTRA_JSON`         | _(unset)_                                              | JSON object merged into the LLM request body (e.g. `{"chat_format":"chatml"}`)                      |
+| `PROMPT_GATE_TRANSPORT`              | `stdio`                                                | `stdio` or `http`                                                                                   |
+| `PROMPT_GATE_EXTERNAL_LLM`           | _(unset)_                                              | Optional: cloud LLM endpoint                                                                         |
+| `PROMPT_GATE_REWRITE_POLICY_FILE`    | _(unset)_                                              | Custom meta-prompt policy file (presets: `news`/`code`/`research`, …) — overrides the default strategy |
 
-> **Tách rạch ròi 2 trục:**
+> **Two separate axes:**
 >
-> - **Per-call** (nhập vào tool): `rewrite_level` — `light` / `balanced` / `detailed`
-> - **Global default** (env): `PROMPT_GATE_REWRITE_POLICY_FILE` — meta-prompt preset
+> - **Per-call** (tool input): `rewrite_level` — `light` / `balanced` / `detailed`
+> - **Global default** (env): `PROMPT_GATE_REWRITE_POLICY_FILE` — the meta-prompt preset
 >
-> Khi gọi tool, `rewrite_level` quyết định mức enrich cụ thể; `PROMPT_GATE_REWRITE_POLICY_FILE` chỉ định meta-prompt dùng làm hệ thống. `qwen3.5-9b` là **ví dụ** — cần verify model name đúng theo version llama.cpp đang chạy.
+> When calling a tool, `rewrite_level` decides the enrichment depth for that call; `PROMPT_GATE_REWRITE_POLICY_FILE` selects the meta-prompt used as the system prompt. `qwen3.5-9b` is an **example** — verify the model name against your llama.cpp version.
 
-## Chạy LLM local (llama.cpp)
+## Run a local LLM (llama.cpp)
 
 ```bash
-# Tải model (một lần)
+# Download a model (one time)
 ./llama-server -m qwen3.5-9b -c 8192 --port 8080 --api-key local-dev-key
 
-# Xác nhận
+# Verify
 curl http://127.0.0.1:8080/v1/models
 ```
 
-MCP server sẽ gọi endpoint này để rewrite prompt. Không cần internet.
+The MCP server calls this endpoint to rewrite prompts. No internet required.
 
-## Chạy MCP server
+## Run the MCP server
 
 ```bash
-# Default (stdio) — dành cho desktop agents
+# Default (stdio) — for desktop agents
 node build/index.js
 
-# Hoặc qua package.json
+# Or via package.json
 npm start
 ```
 
-## Tích hợp với agent
+## Integrate with agents
 
-> **Standard MCP mode** là chế độ mặc định, hoạt động trên mọi agent hỗ trợ MCP. Phần Mandatory Gating (hook) là **extension** — không bắt buộc, và chỉ khả thi khi agent có hỗ trợ hook API.
+> **Standard MCP mode** is the default and works with every MCP-capable agent. Mandatory Gating (hooks) is an **extension** — optional, and only possible when the agent exposes a hook API.
 
-### Ví dụ cấu hình MCP server
+### Example MCP server configuration
 
-Thêm MCP server vào config của agent (JSON dạng phổ biến):
+Add the server to your agent's config (common JSON shape):
 
 ```json
 {
@@ -137,7 +137,7 @@ Thêm MCP server vào config của agent (JSON dạng phổ biến):
 }
 ```
 
-Hoặc nếu đã publish lên npm:
+Or, when installed from npm:
 
 ```json
 {
@@ -150,21 +150,21 @@ Hoặc nếu đã publish lên npm:
 }
 ```
 
-Mỗi agent có cơ chế cấu hình khác nhau — xem [ma trận tương thích](docs/ARCHITECTURE.md#3-ma-trận-tương-thích-agent).
+Each agent has a different configuration mechanism — see the [compatibility matrix](docs/ARCHITECTURE.md#3-agent-compatibility-matrix).
 
-### Truyền cấu hình (env) cho server — 3 cách
+### Passing configuration (env) to the server — 3 ways
 
-Server đọc config theo thứ tự ưu tiên (cao hơn thắng):
+The server reads config with this precedence (higher wins):
 
 ```
-1. env thật (client truyền qua `env`/`environment` trong JSON MCP)
-2. file `.env` (auto-load: PROMPT_GATE_ENV_FILE → CWD → cạnh build/index.js)
-3. defaults built-in
+1. Real environment variables (passed by the MCP client via `env`/`environment` in its JSON config)
+2. A `.env` file (auto-loaded: PROMPT_GATE_ENV_FILE → CWD → next to build/index.js)
+3. Built-in defaults
 ```
 
-#### Cách A — `env` trong JSON (khuyến nghị khi publish)
+#### Option A — `env` in JSON (recommended when publishing)
 
-Claude Code / Cursor / VS Code Copilot dùng key `mcpServers` (hoặc `servers`) + trường `env`:
+Claude Code / Cursor / VS Code Copilot use the `mcpServers` (or `servers`) key plus an `env` field:
 
 ```json
 {
@@ -184,7 +184,7 @@ Claude Code / Cursor / VS Code Copilot dùng key `mcpServers` (hoặc `servers`)
 }
 ```
 
-> OpenCode V2 dùng `mcp.servers` + trường `environment`, và `command` là mảng:
+> OpenCode V2 uses `mcp.servers` with an `environment` field, and `command` is an array:
 >
 > ```jsonc
 > {
@@ -200,11 +200,11 @@ Claude Code / Cursor / VS Code Copilot dùng key `mcpServers` (hoặc `servers`)
 > }
 > ```
 
-#### Cách B — file `.env` (local dev)
+#### Option B — a `.env` file (local dev)
 
-Copy `.env.example` → `.env` ở root repo. Server **tự load** khi khởi động (không cần `env` trong JSON). Khi client spawn server từ CWD khác, server sẽ tìm `.env` cạnh `build/index.js` (repo). Set `PROMPT_GATE_ENV_FILE=/duong/dan/.env` để chỉ đúng file.
+Copy `.env.example` → `.env` at the repo root. The server **loads it automatically** at startup (no `env` needed in JSON). When a client spawns the server from a different CWD, the server looks for `.env` next to `build/index.js` (the repo). Set `PROMPT_GATE_ENV_FILE=/path/to/.env` to point to a specific file.
 
-#### Cách C — Custom provider (ship riêng, dùng khi publish)
+#### Option C — custom provider (ship your own, used when publishing)
 
 ```json
 "env": {
@@ -213,7 +213,7 @@ Copy `.env.example` → `.env` ở root repo. Server **tự load** khi khởi đ
 }
 ```
 
-`my-provider.js` phải export:
+`my-provider.js` must export:
 
 ```js
 export function createCustomLLMProvider(cfg) {
@@ -221,80 +221,79 @@ export function createCustomLLMProvider(cfg) {
   return {
     isConfigured: () => true,
     chat: async (messages, options) => {
-      // gọi endpoint/model/API của bạn, trả về STRING (completion).
-      // Ném Error khi lỗi — server sẽ map thành GateError.
+      // call your endpoint/model/API, return a STRING (the completion).
+      // throw on error — the server maps it to a GateError.
       return await callYourApi(messages, options);
     },
   };
 }
 ```
 
-→ Bạn ship provider này như 1 package riêng (vd `@me/my-llm-provider`), trỏ `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` tới file đã cài (`require.resolve` / path tuyệt đối). Không cần sửa nguồn package prompt-gate.
+→ Ship this provider as a separate package (e.g. `@me/my-llm-provider`) and point `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` at the installed file (`require.resolve` / absolute path). No need to edit the prompt-gate package source.
 
-### Các biến env liên quan tới provider
+### Provider-related env variables
 
-| Biến | Mặc định | Ý nghĩa |
-| --- | --- | --- |
-| `PROMPT_GATE_PROVIDER` | `openai-compatible` | `openai-compatible` / `openai` / `custom` |
-| `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` | _(unset)_ | Path module custom (chỉ dùng khi provider=custom) |
-| `PROMPT_GATE_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | Endpoint OpenAI-compatible |
-| `PROMPT_GATE_EXTERNAL_LLM` | _(unset)_ | Override baseUrl (cloud endpoint) |
-| `PROMPT_GATE_LLM_MODEL` | `qwen3.5-9b` | Tên model |
-| `PROMPT_GATE_LLM_MAX_TOKENS` | `2048` | Completion tokens tối đa |
-| `PROMPT_GATE_TIMEOUT_MS` | `180000` | Timeout (ms) |
-| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_ | `true`/`false` — tắt reasoning (qwen3/llama.cpp) |
-| `PROMPT_GATE_LLM_EXTRA_JSON` | _(unset)_ | JSON gộp vào request body LLM |
-| `PROMPT_GATE_ENV_FILE` | _(unset)_ | Path file `.env` explicit |
+| Variable                             | Default                | Meaning                                                        |
+| ------------------------------------ | ---------------------- | -------------------------------------------------------------- |
+| `PROMPT_GATE_PROVIDER`               | `openai-compatible`    | `openai-compatible` / `openai` / `custom`                       |
+| `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` | _(unset)_              | Path to a custom provider module (only used when provider=custom) |
+| `PROMPT_GATE_LLM_BASE_URL`           | `http://127.0.0.1:8080/v1` | OpenAI-compatible endpoint                                  |
+| `PROMPT_GATE_EXTERNAL_LLM`           | _(unset)_              | Override the base URL (cloud endpoint)                         |
+| `PROMPT_GATE_LLM_MODEL`              | `qwen3.5-9b`           | Model name                                                     |
+| `PROMPT_GATE_LLM_MAX_TOKENS`         | `2048`                 | Max completion tokens                                          |
+| `PROMPT_GATE_TIMEOUT_MS`             | `180000`               | Timeout in ms                                                  |
+| `PROMPT_GATE_LLM_ENABLE_THINKING`    | _(unset)_              | `true`/`false` — disable reasoning (qwen3 / llama.cpp)         |
+| `PROMPT_GATE_LLM_EXTRA_JSON`         | _(unset)_              | JSON object merged into the LLM request body                   |
+| `PROMPT_GATE_ENV_FILE`               | _(unset)_              | Explicit path to a `.env` file                                 |
 
+### Which tool to use when
 
-### Khi nào nên dùng tool nào
+- **`rewrite_prompt`** — when you just want to see an enriched version, without a user gate (e.g. preview).
+- **`review_and_select_prompt`** — when you need a real "gate": the user must choose before the prompt is used. This is the primary tool of the "Universal Prompt Gate".
+- **`get_client_capabilities`** — to check whether the connected client supports elicitation, before calling the gate tool.
 
-- **`rewrite_prompt`** — khi chỉ muốn xem bản enrich, chưa cần user gate (vd preview).
-- **`review_and_select_prompt`** — khi cần "gate" thực sự: user phải chọn trước khi prompt được dùng. Đây là tool chính của "Universal Prompt Gate".
-- **`get_client_capabilities`** — để kiểm tra client đang connect có hỗ trợ elicitation không, trước khi gọi gate tool.
+## How it works
 
-## Luồng hoạt động
-
-### Sơ đồ workflow (Mermaid)
+### Workflow diagram (Mermaid)
 
 ```mermaid
 flowchart TD
-  U(["👤 User<br/>gõ prompt<br/>VD: &quot;thông tin việt nam&quot;"])
+  U(["👤 User<br/>types a prompt<br/>e.g. &quot;thông tin việt nam&quot;"])
 
-  subgraph AGENT["🤖 Coding Agent (client MCP)"]
-    A1["Gọi tool<br/><b>review_and_select_prompt</b>"]
-    A3["Nhận kết quả JSON"]
-    A4{"Dùng kết quả"}
-    AOK["Gửi <b>selected_prompt</b><br/>tới LLM lớn"]
-    ASTOP["Dừng / báo hủy"]
+  subgraph AGENT["🤖 Coding Agent (MCP client)"]
+    A1["Calls tool<br/><b>review_and_select_prompt</b>"]
+    A3["Receives JSON result"]
+    A4{"Use the result?"}
+    AOK["Send <b>selected_prompt</b><br/>to the large LLM"]
+    ASTOP["Stop / report cancelled"]
   end
 
   subgraph MCP["🛡️ Universal Prompt Gate MCP Server"]
     T["Tool: <b>review_and_select_prompt</b>"]
     V["Validate input (Zod)"]
-    R["Gọi LLM để rewrite"]
+    R["Call LLM to rewrite"]
     RM{"LLM ok?"}
-    RE["Trả về error<br/>(<b>không</b> silent fallback)"]
-    E["Hiển thị ORIGINAL &amp; REWRITTEN<br/>qua elicitation"]
-    CHOICE{"User chọn 1 trong 3"}
+    RE["Return error<br/>(<b>no</b> silent fallback)"]
+    E["Show ORIGINAL &amp; REWRITTEN<br/>via elicitation"]
+    CHOICE{"User picks one of three"}
     O1["Use original"]
     O2["Use rewritten"]
     O3["Cancel"]
   end
 
-  subgraph LLM["🧠 LLM local (llama.cpp)"]
+  subgraph LLM["🧠 Local LLM (llama.cpp)"]
     L1["/v1/chat/completions"]
   end
 
   U -->|"1. submit prompt"| A1
   A1 -->|"2. MCP tool call"| T
   T --> V
-  V -->|"hợp lệ"| R
+  V -->|"valid"| R
   R -->|3. fetch| L1
   L1 -->|4. completion| R
   R --> RM
-  RM -->|thất bại| RE
-  RM -->|thành công| E
+  RM -->|failure| RE
+  RM -->|success| E
   E -->|5. elicitation| CHOICE
   CHOICE -->|6a| O1
   CHOICE -->|6b| O2
@@ -308,58 +307,58 @@ flowchart TD
   A4 -->|"cancelled / error"| ASTOP
 ```
 
-> File nguồn của sơ đồ: [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
+> Diagram source: [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 
 ### Standard MCP Mode
 
 ```
-1. Agent submit prompt ("thông tin việt nam")
-2. Agent gọi MCP tool → LLM (llama.cpp) viết lại prompt
-3. MCP server trả về bản gốc & bản đã sửa (qua elicitation UI)
-4. MCP server hiển thị 3 lựa chọn (1/2/3)
-5. User chọn (1/2/3)
-6. MCP server trả về prompt đã chọn (hoặc trạng thái "cancelled")
-7. Agent gửi prompt đó (hoặc dừng nếu hủy)
+1. Agent submits a prompt ("thông tin việt nam")
+2. Agent calls the MCP tool → LLM (llama.cpp) rewrites the prompt
+3. MCP server returns the original & the rewritten version (via the elicitation UI)
+4. MCP server shows the 3 choices (1/2/3)
+5. User picks one (1/2/3)
+6. MCP server returns the chosen prompt (or the "cancelled" state)
+7. Agent sends that prompt (or stops if cancelled)
 ```
 
-### Mandatory Gating (khi agent hỗ trợ hooks)
+### Mandatory Gating (when the agent supports hooks)
 
-Agent hook bắt prompt → gọi `review_and_select_prompt` → bên trong MCP server:
+An agent hook intercepts the prompt → calls `review_and_select_prompt` → inside the MCP server:
 
 ```
-Write prompt (llama.cpp)
-    → Hiển thị lựa chọn (elicitation)
-    → Người dùng lựa chọn & xác nhận
-    → Trả về kết quả (hoặc hủy)
+Rewrite the prompt (llama.cpp)
+    → Show the choices (elicitation)
+    → User selects & confirms
+    → Return the result (or cancel)
 ```
 
-Prompt **không được** forward khi user chọn "Hủy".
+The prompt is **not** forwarded when the user picks "Cancel".
 
 ### Cancellation Flow
 
 ```
-User chọn Cancel → MCP Server xác nhận hủy → Không forward prompt tới agent/LLM
+User picks Cancel → MCP Server confirms the cancellation → The prompt is not forwarded to the agent/LLM
 Response: { status: "cancelled", selected_option: "cancel", selected_prompt: null }
 ```
 
-> Cancel là **distinct protocol outcome** — response **không** expose `selected_prompt`. Không silent fallback sang original khi LLM lỗi.
+> Cancel is a **distinct protocol outcome** — the response **does not** expose `selected_prompt`. There is no silent fallback to the original on LLM errors.
 
-## An toàn & bảo mật
+## Safety & security
 
-- Giới hạn độ dài input, validate output (Zod)
-- Timeout & cancellation (explicit, không auto-select)
-- Phát hiện injection; treat prompt as untrusted data
-- Quản lý session (pending requests), isolation per session/request ID, cleanup abandoned
-- **Không silent fallback**: sau LLM error, KHÔNG auto-chọn original — trả về lỗi rõ ràng
-- **Không auto-select sau timeout**: user phải chọn thủ công
-- **Cancel = distinct outcome**: response `status=cancelled`, **không** expose approved prompt
-- Không log prompt đầy đủ; redact secrets trong log; không placeholder credentials
-- Không tự động forward khi hủy; không thực thi shell từ prompt
+- Input length limits, output validation (Zod)
+- Timeout & cancellation (explicit, no auto-select)
+- Injection detection; the prompt is treated as untrusted data
+- Session management (pending requests), isolation per session/request ID, cleanup of abandoned requests
+- **No silent fallback**: on LLM error, the original is **not** auto-selected — a clear error is returned
+- **No auto-select on timeout**: the user must choose manually
+- **Cancel = distinct outcome**: response `status=cancelled`, **no** approved prompt exposed
+- No full-prompt logging; secrets redacted in logs; no placeholder credentials
+- No auto-forward on cancel; no shell execution from prompts
 
 ## Testing
 
 ```bash
-# Chạy unit + integration tests (mock LLM, không cần llama.cpp)
+# Run unit + integration tests (mocked LLM, no llama.cpp required)
 npm test
 
 # Watch mode
@@ -369,7 +368,7 @@ npm run test:watch
 npm run test:coverage
 ```
 
-Test suite phủ:
+Test coverage includes:
 
 - Rewrite (success, timeout, malformed, language/context pass-through)
 - Review/select: original, rewritten, cancel, cancellation via action, LLM error (no fallback), elicitation unsupported, invalid selection
@@ -378,17 +377,17 @@ Test suite phủ:
 - Logger (redaction, stderr-only)
 - Config (env defaults, overrides, clamping)
 
-## Phát triển & build
+## Development & build
 
 ```bash
 npm run typecheck   # tsc --noEmit
 npm run lint         # eslint
 npm run format       # prettier
 npm run build        # tsc
-npm run dev          # tsx (không build)
+npm run dev          # tsx (no build)
 ```
 
-## Cấu trúc thư mục
+## Project structure
 
 ```
 tool-prompt-rewrite-mcp/
@@ -437,24 +436,24 @@ tool-prompt-rewrite-mcp/
         └── llm-mocks.ts
 ```
 
-## Tài liệu liên quan
+## Related documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Kiến trúc tổng thể, ma trận tương thích, env variables, security
-- [MCP Inspector](https://github.com/modelcontextprotocol/inspector) — test & debug server
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) — chạy OpenAI-compatible API local
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — overall architecture, compatibility matrix, env variables, security
+- [MCP Inspector](https://github.com/modelcontextprotocol/inspector) — test & debug the server
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — run a local OpenAI-compatible API
 - [Troubleshooting](#troubleshooting)
 
 ## Troubleshooting
 
-| Triệu chứng                          | Nguyên nhân                                                | Cách xử lý                                                                                                                 |
-| ------------------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `LLM request timed out`              | llama.cpp quá chậm, model quá lớn, thinking model chạy CPU | Tăng `PROMPT_GATE_TIMEOUT_MS` (vd 300000), tăng `PROMPT_GATE_LLM_MAX_TOKENS` (vd 4096)                                   |
-| `LLM HTTP 401`                       | Sai API key                                                | Kiểm tra `PROMPT_GATE_LLM_API_KEY` khớp với key llama.cpp                                                                  |
-| `LLM returned an empty completion`   | Model không sinh ra text (temperature cao, max_tokens nhỏ) | Giảm `temperature`, tăng `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, tăng nếu cần)                                         |
-| `LLM returned empty content but produced reasoning_content` | Model thinking (qwen3/3.5) không tôn trọng `thinking:false` | Dùng model **không** thinking (vd `qwen2.5-7b`), hoặc update llama.cpp về build hỗ trợ `thinking:false`, hoặc set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ để model có đủ budget |
-| Client báo `elicitation_unsupported` | Agent không support elicitation                            | Dùng tool `get_client_capabilities` trước; chỉ dùng gate tool khi `elicitation_supported: true`                            |
-| Prompt không qua gate khi dùng agent | Agent không có hook (Standard mode)                        | Đây là giới hạn của standard MCP — xem [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-khi-agent-hỗ-trợ-hooks) |
-| `node build/index.js` không chạy     | Chưa build                                                 | `npm run build` trước                                                                                                      |
+| Symptom                          | Cause                                                  | Fix                                                                                                                    |
+| -------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `LLM request timed out`          | llama.cpp is slow, the model is too large, or a thinking model on CPU | Increase `PROMPT_GATE_TIMEOUT_MS` (e.g. 300000) and `PROMPT_GATE_LLM_MAX_TOKENS` (e.g. 4096)                        |
+| `LLM HTTP 401`                   | Wrong API key                                          | Check that `PROMPT_GATE_LLM_API_KEY` matches your llama.cpp key                                                       |
+| `LLM returned an empty completion` | The model produced no text (high temperature, small max_tokens) | Lower `temperature`, increase `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, raise if needed)                            |
+| `LLM returned empty content but produced reasoning_content` | A thinking model (qwen3/3.5) is not respecting `thinking:false` | Use a **non-thinking** model (e.g. `qwen2.5-7b`), or upgrade llama.cpp to a build that supports `thinking:false`, or set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ so the model has enough budget |
+| Client reports `elicitation_unsupported` | The agent does not support elicitation            | Call the `get_client_capabilities` tool first; only use the gate tool when `elicitation_supported: true`              |
+| Prompt does not go through the gate when using an agent | The agent has no hooks (standard mode)      | This is a limit of standard MCP — see [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-when-the-agent-supports-hooks) |
+| `node build/index.js` does not run  | Not built yet                                            | Run `npm run build` first                                                                                            |
 
 ## License
 
