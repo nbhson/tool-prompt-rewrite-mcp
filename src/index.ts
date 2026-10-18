@@ -20,7 +20,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig } from './config.js';
 import { createLogger, type Logger } from './logger.js';
@@ -57,9 +57,7 @@ function findEnvFile(cwd: string, scriptDir: string): string {
  * Build the MCP server with all tools registered. Exported so tests / the
  * HTTP transport can reuse the exact same composition without stdio.
  */
-export async function buildServer(
-  configOverride?: Parameters<typeof loadConfig>[0]
-): Promise<ServerHandle> {
+export async function buildServer(configOverride?: Parameters<typeof loadConfig>[0]): Promise<ServerHandle> {
   const cfg = loadConfig(configOverride);
   const log = createLogger(cfg.logLevel);
   const llm = await createProvider(cfg.llm);
@@ -99,6 +97,7 @@ export async function buildServer(
     detectCapabilities: detect,
     llmConfig: cfg.llm,
     policyFile: cfg.policyFile,
+    echoFallback: cfg.echoFallback,
   });
 
   log.info('server: built', {

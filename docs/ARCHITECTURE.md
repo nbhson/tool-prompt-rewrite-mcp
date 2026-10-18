@@ -310,6 +310,7 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
 | `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Completion tokens tối đa        |
 | `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | Bật/tắt reasoning (thinking models) |
 | `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào body LLM    |
+| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                 | Client không support elicitation → gate trả `pending_user_selection` (fallback text) thay vì error (set `false` để strict) |
 | `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | Chế độ transport                    |
 | `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud        |
 | `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset) |
@@ -325,6 +326,7 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
 - **Không silent fallback**: sau LLM error, **không** auto-chọn original — trả về lỗi rõ ràng
 - **Không auto-select sau timeout**: user phải chọn thủ công
 - **Cancel = distinct protocol outcome**: response `status=cancelled`, **không** expose approved prompt
+- **Echo fallback (client không support elicitation)**: trả về `pending_user_selection` kèm menu 3 lựa chọn dạng text; agent phải re-call tool với `selection` do **user** chọn — không auto-select, không auto-forward. Bật/tắt qua `PROMPT_GATE_ECHO_FALLBACK`
 - Phát hiện injection; treat prompt as untrusted data
 - Quản lý session; **isolation per session/request ID**; cleanup abandoned requests
 - Không log prompt đầy đủ; redact secrets trong log; không placeholder credentials

@@ -23,7 +23,8 @@ export interface RewriteResult {
 /**
  * Output of `review_and_select_prompt` after user interaction.
  *
- * Exactly one of `status: 'approved'` or `status: 'cancelled'`.
+ * Exactly one of `status: 'approved'`, `status: 'cancelled'`, or
+ * `status: 'pending_user_selection'`.
  * Cancellation MUST NOT expose `selectedPrompt`.
  */
 export type ReviewResult =
@@ -38,7 +39,26 @@ export type ReviewResult =
       status: 'cancelled';
       selectedOption: 'cancel';
       selectedPrompt: null;
+    }
+  | {
+      /**
+       * The rewrite is ready but the user has not chosen yet. Returned only
+       * when the client does not support MCP elicitation and the text
+       * fallback (echo fallback) is enabled. `originalPrompt` /
+       * `rewrittenPrompt` are BOTH exposed so the user can compare; the
+       * agent must re-call the tool with `selection` after the user picks.
+       */
+      status: 'pending_user_selection';
+      originalPrompt: string;
+      rewrittenPrompt: string;
+      changesSummary: string;
+      warnings?: string[];
+      /** The three valid values the agent may pass on the next call. */
+      availableSelections: ['original', 'rewritten', 'cancel'];
     };
+
+/** The user's explicit choice, used on the re-invocation of the gate tool. */
+export type PromptSelection = 'original' | 'rewritten' | 'cancel';
 
 /** Errors that should be returned as data (not thrown across the MCP boundary). */
 export type GateErrorKind =

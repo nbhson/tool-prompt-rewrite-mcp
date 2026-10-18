@@ -80,8 +80,9 @@ export function detectLanguage(prompt: string): DetectedLanguage {
   //    Latin words (function words or total word count >= 4). This keeps a
   //    short "abc def" from being mislabelled English.
   const hasForeignChars =
-    /[à-ỹ\u0102\u02c6\u0300-\u036f]/.test(text) || // Vietnamese diacritics
-    /[\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]/.test(text); // CJK + Hangul + Kana
+    // eslint-disable-next-line no-misleading-character-class -- combined diacritic ranges are intentional
+    /[\u00E0-\u016F\u02C6-\u02CF\u0300-\u036F]/.test(text) || // Vietnamese diacritics
+    /[\u4E00-\u9FFF\uAC00-\uD7A3\u3040-\u30FF]/.test(text); // CJK + Hangul + Kana
   if (hasForeignChars) return 'unknown';
 
   const words = text.split(/\s+/).filter((w) => /^[a-z]+$/.test(w));

@@ -24,23 +24,30 @@ use the `rewrite-prompt` skill instead.
 
 ## Inputs
 
-| Field           | Required | Notes                                                                 |
-| --------------- | -------- | --------------------------------------------------------------------- |
-| `prompt`        | yes      | The user's **latest message only**, not the whole session.           |
-| `context`       | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history. |
-| `language`      | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
-| `rewrite_level` | no       | `light` / `balanced` (default) / `detailed`.                         |
+| Field              | Required | Notes                                                                                                                                                                                                                                                     |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt`           | yes      | The user's **latest message only**, not the whole session.                                                                                                                                                                                                |
+| `context`          | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                             |
+| `language`         | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
+| `rewrite_level`    | no       | `light` / `balanced` (default) / `detailed`.                                                                                                                                                                                                              |
+| `selection`        | no       | **Second call only** (after `pending_user_selection`): the user's choice — `"original"` / `"rewritten"` / `"cancel"`. Never auto-select; pass it only after the user has answered.                                                                        |
+| `rewritten_prompt` | no       | **Second call only:** the exact rewritten text the user saw, so the user approves exactly what they read.                                                                                                                                                 |
 
 ## How it behaves
 
 1. The tool rewrites the prompt (context enrichment only — no new intent).
-2. It shows the user **both** the original and the rewritten version via the
-   client's elicitation UI.
+2. It shows the user **both** the original and the rewritten version:
+   - If the client supports elicitation: an interactive picker (3 options).
+   - If the client does NOT: a `pending_user_selection` result with both
+     versions in plain text and the three numbered choices.
 3. The user chooses one of three:
    - **`original`** → the original prompt is the approved result.
    - **`rewritten`** → the rewritten prompt is the approved result.
    - **`cancel`** → nothing is approved.
 4. The tool returns the approved prompt — or a distinct cancellation outcome.
+   When the text fallback was used, step 4 happens on a **second call**
+   where you pass `selection` (plus `rewritten_prompt` if that is what was
+   chosen). The second call does not re-run the LLM.
 
 ## Expected results
 
@@ -66,7 +73,35 @@ use the `rewrite-prompt` skill instead.
 }
 ```
 
-**Error (LLM failure, unsupported elicitation, ...):** a distinct error
+**Pending user selection (client has no elicitation — text fallback):**
+
+When the client does not support MCP elicitation, the first call returns a
+distinct outcome that shows both versions in plain text with the three
+numbered choices, and instructs you to re-call this tool with the user's
+choice:
+
+```json
+{
+  "status": "pending_user_selection",
+  "original_prompt": "...",
+  "rewritten_prompt": "...",
+  "available_selections": ["original", "rewritten", "cancel"]
+}
+```
+
+On the second call, pass `selection` (and `rewritten_prompt` if the user
+chose the rewritten version) — the second call does NOT re-run the LLM:
+
+```json
+{
+  "prompt": "...(same)",
+  "context": "...(same)",
+  "selection": "rewritten",
+  "rewritten_prompt": "...(the text the user saw)"
+}
+```
+
+**Error (LLM failure, strict mode, ...):** a distinct error
 outcome; never a silent fallback to the original.
 
 ## Hard rules (do not violate)

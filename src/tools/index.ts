@@ -24,6 +24,11 @@ export interface ToolDeps {
   llmConfig?: LLMConfig;
   /** Global default policy file (from PROMPT_GATE_REWRITE_POLICY_FILE). */
   policyFile?: string;
+  /**
+   * Whether the text-echo fallback is enabled when the client does not
+   * support elicitation (from PROMPT_GATE_ECHO_FALLBACK). Default true.
+   */
+  echoFallback?: boolean;
 }
 
 export function registerAllTools(deps: ToolDeps): void {
@@ -35,6 +40,8 @@ export function registerAllTools(deps: ToolDeps): void {
     server: deps.server,
     rewrite,
     log: deps.log,
+    detect: deps.detectCapabilities,
+    echoFallback: deps.echoFallback ?? true,
     ...(deps.reviewDeps ?? {}),
   };
   registerReviewAndSelectTool(reviewDeps);

@@ -39,11 +39,11 @@ The user picks one; the chosen prompt (or a "cancelled" state) is then sent to t
 
 ## MCP tools
 
-| Tool                       | Main input                                                                                   | Main output                                                                                                                                                                                                     |
-| -------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rewrite_prompt`           | `prompt` (required), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`) | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                            |
-| `review_and_select_prompt` | `prompt` (required), `language`?, `context`?, `rewrite_level`?                                | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancelled: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` |
-| `get_client_capabilities`  | —                                                                                             | `elicitation_supported`, `structured_elicitation_supported`, `transport`, `integration_mode`, `mandatory_gating_enforceable`                                                                                     |
+| Tool                       | Main input                                                                                                                                         | Main output                                                                                                                                                                                                                                                                                                |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rewrite_prompt`           | `prompt` (required), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`)                                                      | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                                                                                                                      |
+| `review_and_select_prompt` | `prompt` (required), `language`?, `context`?, `rewrite_level`?; on a second call after `pending_user_selection`: `selection`?, `rewritten_prompt`? | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancelled: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` · No-elicitation fallback: `status=pending_user_selection` + both versions + 3 choices |
+| `get_client_capabilities`  | —                                                                                                                                                  | `elicitation_supported`, `structured_elicitation_supported`, `transport`, `integration_mode`, `mandatory_gating_enforceable`                                                                                                                                                                               |
 
 > **Key principles:**
 >
@@ -75,19 +75,20 @@ npm run inspector
 
 Create a `.env` file (see `.env.example`) or export the variables directly:
 
-| Variable                             | Default                                                | Description                                                                                        |
-| ------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `PROMPT_GATE_LLM_BASE_URL`           | `http://127.0.0.1:8080/v1`                             | LLM endpoint (OpenAI-compatible)                                                                   |
-| `PROMPT_GATE_LLM_MODEL`              | `qwen3.5-9b` _(example — verify against your llama.cpp version)_ | Model name                                                                                          |
-| `PROMPT_GATE_LLM_API_KEY`            | `local-dev-key`                                        | API key (for local dev, no real key needed)                                                        |
-| `PROMPT_GATE_TIMEOUT_MS`             | `180000`                                               | LLM timeout in ms (thinking models on CPU need more time)                                          |
-| `PROMPT_GATE_LLM_RETRY_MAX`          | `3`                                                    | Retry count for network errors (idempotent calls only)                                             |
-| `PROMPT_GATE_LLM_MAX_TOKENS`         | `2048`                                                 | Max completion tokens (thinking models need a larger budget)                                       |
-| `PROMPT_GATE_LLM_ENABLE_THINKING`    | _(unset)_                                              | `true`/`false` — enable/disable reasoning (qwen3 / llama.cpp thinking models)                       |
-| `PROMPT_GATE_LLM_EXTRA_JSON`         | _(unset)_                                              | JSON object merged into the LLM request body (e.g. `{"chat_format":"chatml"}`)                      |
-| `PROMPT_GATE_TRANSPORT`              | `stdio`                                                | `stdio` or `http`                                                                                   |
-| `PROMPT_GATE_EXTERNAL_LLM`           | _(unset)_                                              | Optional: cloud LLM endpoint                                                                         |
-| `PROMPT_GATE_REWRITE_POLICY_FILE`    | _(unset)_                                              | Custom meta-prompt policy file (presets: `news`/`code`/`research`, …) — overrides the default strategy |
+| Variable                          | Default                                                          | Description                                                                                                                                                            |
+| --------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                                       | LLM endpoint (OpenAI-compatible)                                                                                                                                       |
+| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(example — verify against your llama.cpp version)_ | Model name                                                                                                                                                             |
+| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                                  | API key (for local dev, no real key needed)                                                                                                                            |
+| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                                         | LLM timeout in ms (thinking models on CPU need more time)                                                                                                              |
+| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                              | Retry count for network errors (idempotent calls only)                                                                                                                 |
+| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                           | Max completion tokens (thinking models need a larger budget)                                                                                                           |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                                        | `true`/`false` — enable/disable reasoning (qwen3 / llama.cpp thinking models)                                                                                          |
+| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                                        | JSON object merged into the LLM request body (e.g. `{"chat_format":"chatml"}`)                                                                                         |
+| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                           | When the client does not support MCP elicitation, the gate tool returns a `pending_user_selection` text menu instead of a hard error (agent re-calls with `selection`) |
+| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                          | `stdio` or `http`                                                                                                                                                      |
+| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                                        | Optional: cloud LLM endpoint                                                                                                                                           |
+| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                                        | Custom meta-prompt policy file (presets: `news`/`code`/`research`, …) — overrides the default strategy                                                                 |
 
 > **Two separate axes:**
 >
@@ -95,6 +96,37 @@ Create a `.env` file (see `.env.example`) or export the variables directly:
 > - **Global default** (env): `PROMPT_GATE_REWRITE_POLICY_FILE` — the meta-prompt preset
 >
 > When calling a tool, `rewrite_level` decides the enrichment depth for that call; `PROMPT_GATE_REWRITE_POLICY_FILE` selects the meta-prompt used as the system prompt. `qwen3.5-9b` is an **example** — verify the model name against your llama.cpp version.
+
+## When the client does not support elicitation (text fallback)
+
+Some agents (older VS Code, Cline, Continue, …) do not declare the MCP
+`elicitation` capability. When that happens, the gate tool
+`review_and_select_prompt` cannot show an interactive picker. The server has
+two behaviors, controlled by `PROMPT_GATE_ECHO_FALLBACK`:
+
+- **`true` (default) — echo fallback:** the tool returns a distinct
+  `status: "pending_user_selection"` result. It renders both versions in
+  plain text with the three numbered choices:
+
+  ```text
+  [1] original — use the user's exact text
+  [2] rewritten — use the LLM-enriched version
+  [3] cancel — use neither; abort the prompt gate
+  ```
+
+  The agent shows this menu to the user; when the user answers, the agent
+  re-calls `review_and_select_prompt` with `selection` set to
+  `"original"` / `"rewritten"` / `"cancel"` (and, for `rewritten`, the
+  `rewritten_prompt` text the user saw). The second call does **not** invoke
+  the LLM again and returns the normal approved/cancelled outcome.
+
+- **`false` — strict:** the tool returns a hard compatibility error, as in
+  the original design. Use this when you want to refuse to gate at all
+  unless the client supports elicitation.
+
+The echo fallback is **not** a silent fallback: it never auto-selects, never
+forwards the prompt without an explicit user choice, and cancellation still
+exposes no approved prompt.
 
 ## Run a local LLM (llama.cpp)
 
@@ -193,10 +225,10 @@ Claude Code / Cursor / VS Code Copilot use the `mcpServers` (or `servers`) key p
 >       "prompt-gate": {
 >         "type": "local",
 >         "command": ["node", "/absolute/path/to/build/index.js"],
->         "environment": { "PROMPT_GATE_LLM_MODEL": "qwen3.5-9b" }
->       }
->     }
->   }
+>         "environment": { "PROMPT_GATE_LLM_MODEL": "qwen3.5-9b" },
+>       },
+>     },
+>   },
 > }
 > ```
 
@@ -233,18 +265,18 @@ export function createCustomLLMProvider(cfg) {
 
 ### Provider-related env variables
 
-| Variable                             | Default                | Meaning                                                        |
-| ------------------------------------ | ---------------------- | -------------------------------------------------------------- |
-| `PROMPT_GATE_PROVIDER`               | `openai-compatible`    | `openai-compatible` / `openai` / `custom`                       |
-| `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` | _(unset)_              | Path to a custom provider module (only used when provider=custom) |
-| `PROMPT_GATE_LLM_BASE_URL`           | `http://127.0.0.1:8080/v1` | OpenAI-compatible endpoint                                  |
-| `PROMPT_GATE_EXTERNAL_LLM`           | _(unset)_              | Override the base URL (cloud endpoint)                         |
-| `PROMPT_GATE_LLM_MODEL`              | `qwen3.5-9b`           | Model name                                                     |
-| `PROMPT_GATE_LLM_MAX_TOKENS`         | `2048`                 | Max completion tokens                                          |
-| `PROMPT_GATE_TIMEOUT_MS`             | `180000`               | Timeout in ms                                                  |
-| `PROMPT_GATE_LLM_ENABLE_THINKING`    | _(unset)_              | `true`/`false` — disable reasoning (qwen3 / llama.cpp)         |
-| `PROMPT_GATE_LLM_EXTRA_JSON`         | _(unset)_              | JSON object merged into the LLM request body                   |
-| `PROMPT_GATE_ENV_FILE`               | _(unset)_              | Explicit path to a `.env` file                                 |
+| Variable                             | Default                    | Meaning                                                           |
+| ------------------------------------ | -------------------------- | ----------------------------------------------------------------- |
+| `PROMPT_GATE_PROVIDER`               | `openai-compatible`        | `openai-compatible` / `openai` / `custom`                         |
+| `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` | _(unset)_                  | Path to a custom provider module (only used when provider=custom) |
+| `PROMPT_GATE_LLM_BASE_URL`           | `http://127.0.0.1:8080/v1` | OpenAI-compatible endpoint                                        |
+| `PROMPT_GATE_EXTERNAL_LLM`           | _(unset)_                  | Override the base URL (cloud endpoint)                            |
+| `PROMPT_GATE_LLM_MODEL`              | `qwen3.5-9b`               | Model name                                                        |
+| `PROMPT_GATE_LLM_MAX_TOKENS`         | `2048`                     | Max completion tokens                                             |
+| `PROMPT_GATE_TIMEOUT_MS`             | `180000`                   | Timeout in ms                                                     |
+| `PROMPT_GATE_LLM_ENABLE_THINKING`    | _(unset)_                  | `true`/`false` — disable reasoning (qwen3 / llama.cpp)            |
+| `PROMPT_GATE_LLM_EXTRA_JSON`         | _(unset)_                  | JSON object merged into the LLM request body                      |
+| `PROMPT_GATE_ENV_FILE`               | _(unset)_                  | Explicit path to a `.env` file                                    |
 
 ### Which tool to use when
 
@@ -445,15 +477,15 @@ tool-prompt-rewrite-mcp/
 
 ## Troubleshooting
 
-| Symptom                          | Cause                                                  | Fix                                                                                                                    |
-| -------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `LLM request timed out`          | llama.cpp is slow, the model is too large, or a thinking model on CPU | Increase `PROMPT_GATE_TIMEOUT_MS` (e.g. 300000) and `PROMPT_GATE_LLM_MAX_TOKENS` (e.g. 4096)                        |
-| `LLM HTTP 401`                   | Wrong API key                                          | Check that `PROMPT_GATE_LLM_API_KEY` matches your llama.cpp key                                                       |
-| `LLM returned an empty completion` | The model produced no text (high temperature, small max_tokens) | Lower `temperature`, increase `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, raise if needed)                            |
-| `LLM returned empty content but produced reasoning_content` | A thinking model (qwen3/3.5) is not respecting `thinking:false` | Use a **non-thinking** model (e.g. `qwen2.5-7b`), or upgrade llama.cpp to a build that supports `thinking:false`, or set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ so the model has enough budget |
-| Client reports `elicitation_unsupported` | The agent does not support elicitation            | Call the `get_client_capabilities` tool first; only use the gate tool when `elicitation_supported: true`              |
-| Prompt does not go through the gate when using an agent | The agent has no hooks (standard mode)      | This is a limit of standard MCP — see [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-when-the-agent-supports-hooks) |
-| `node build/index.js` does not run  | Not built yet                                            | Run `npm run build` first                                                                                            |
+| Symptom                                                     | Cause                                                                 | Fix                                                                                                                                                                                        |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LLM request timed out`                                     | llama.cpp is slow, the model is too large, or a thinking model on CPU | Increase `PROMPT_GATE_TIMEOUT_MS` (e.g. 300000) and `PROMPT_GATE_LLM_MAX_TOKENS` (e.g. 4096)                                                                                               |
+| `LLM HTTP 401`                                              | Wrong API key                                                         | Check that `PROMPT_GATE_LLM_API_KEY` matches your llama.cpp key                                                                                                                            |
+| `LLM returned an empty completion`                          | The model produced no text (high temperature, small max_tokens)       | Lower `temperature`, increase `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, raise if needed)                                                                                                 |
+| `LLM returned empty content but produced reasoning_content` | A thinking model (qwen3/3.5) is not respecting `thinking:false`       | Use a **non-thinking** model (e.g. `qwen2.5-7b`), or upgrade llama.cpp to a build that supports `thinking:false`, or set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ so the model has enough budget |
+| Client reports `elicitation_unsupported`                    | The agent does not support elicitation                                | Call the `get_client_capabilities` tool first; only use the gate tool when `elicitation_supported: true`                                                                                   |
+| Prompt does not go through the gate when using an agent     | The agent has no hooks (standard mode)                                | This is a limit of standard MCP — see [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-when-the-agent-supports-hooks)                                                           |
+| `node build/index.js` does not run                          | Not built yet                                                         | Run `npm run build` first                                                                                                                                                                  |
 
 ## License
 

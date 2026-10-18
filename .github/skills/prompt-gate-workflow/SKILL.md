@@ -15,7 +15,7 @@ The three tools:
 | -------------------------- | ----------------------------------------------------------- | -------------- |
 | `get_client_capabilities`  | Reports what the connected client can do (elicitation, ...) | No             |
 | `review_and_select_prompt` | **Gate**: rewrite + user picks original/rewritten/cancel    | **Yes**        |
-| `rewrite_prompt`           | Rewrite only (candidate, no approval)                        | No             |
+| `rewrite_prompt`           | Rewrite only (candidate, no approval)                       | No             |
 
 ## Decision flow
 
@@ -23,36 +23,50 @@ The three tools:
 1. Is the prompt going to be forwarded to the model on the user's behalf
    (code change, external action, anything where drift is costly)?
    │
-   ├─ YES → call get_client_capabilities
+   ├─ YES → call review_and_select_prompt (the gate)
    │        │
-   │        ├─ elicitation_supported = true
-   │        │        → call review_and_select_prompt  (the gate)
-   │        │
-   │        └─ elicitation_supported = false
-   │                 → the gate cannot run. Fall back to one of:
-   │                     • tell the user their client does not support
-   │                       interactive elicitation, or
-   │                     • use rewrite_prompt for a preview and let the user
-   │                       decide manually (no automatic approval).
+   │        ├─ status = "approved"        → forward selected_prompt.
+   │        ├─ status = "cancelled"        → stop; selected_prompt is null.
+   │        ├─ status = "pending_user_selection"
+   │        │        (client has no elicitation; text fallback is on)
+   │        │        → show the two versions + the 3 numbered choices to
+   │        │          the user. When the user answers, re-call
+   │        │          review_and_select_prompt with `selection` set to
+   │        │          "original"/"rewritten"/"cancel" (and
+   │        │          `rewritten_prompt` if that was chosen). The second
+   │        │          call does not re-run the LLM.
+   │        └─ status = "error"
+   │                 → do NOT fall back to the original; report the error.
    │
    └─ NO (just a preview / enrichment, no forwarding)
             → call rewrite_prompt
 ```
 
-## Step 1 — check capabilities
+> **Note on elicitation:** the gate tool works with or without client
+> elicitation support. When the client has no elicitation, the server's
+> **text fallback** (`PROMPT_GATE_ECHO_FALLBACK=true`, the default) returns
+> `pending_user_selection` and the gate completes on a second call with the
+> user's `selection`. Only when the fallback is disabled
+> (`PROMPT_GATE_ECHO_FALLBACK=false`) does a non-eliciting client get a hard
+> compatibility error — in that case, prefer `rewrite_prompt` or surface the
+> limitation to the user.
+
+## Step 1 — check capabilities (optional)
 
 Call `get_client_capabilities` (no input). Read:
 
-- `elicitation_supported` — can the client show an interactive choice UI?
+- `elicitation_supported` — can the client show an interactive picker?
 - `structured_elicitation_supported` — structured variant.
 - `transport` — `stdio` / `http`.
 - `integration_mode` — how the client integrates the server.
 - `mandatory_gating_enforceable` — whether a hard gate is enforceable.
 
-Only proceed to the gate (`review_and_select_prompt`) when
-`elicitation_supported` is `true`. If `false`, the gate tool will return a
-clear compatibility error — do not pretend a normal tool response is an
-interactive confirmation.
+If `elicitation_supported` is `false` and the text fallback is enabled
+(the default), the gate still works: the tool returns
+`pending_user_selection` and you complete it with a second call carrying
+`selection`. Only when `PROMPT_GATE_ECHO_FALLBACK=false` does a
+non-eliciting client get a hard compatibility error — never pretend a normal
+tool response is an interactive confirmation.
 
 ## Step 2 — call the right tool
 

@@ -51,6 +51,16 @@ export interface PromptGateConfig {
   /** Optional path to a custom meta-prompt policy file. */
   policyFile?: string;
   logLevel: LogLevel;
+  /**
+   * When the connected client does NOT support MCP elicitation, the gate tool
+   * cannot show an interactive picker. This flag controls the fallback:
+   * - `true`  (default): return a "pending_user_selection" result that renders
+   *   the three numbered choices in plain text and instructs the agent to re-call
+   *   the tool with the `selection` input once the user has chosen.
+   * - `false`: return a hard compatibility error (no fallback) — the strictest
+   *   mode, matching the original "no silent fallback" rule.
+   */
+  echoFallback: boolean;
 }
 
 const DEFAULTS = {
@@ -69,6 +79,9 @@ const DEFAULTS = {
   maxTokens: 2048,
   temperature: 0.2,
   provider: 'openai-compatible' as const,
+  // When the client does not support elicitation, render the 3 choices in
+  // text and let the agent re-call with the user's selection.
+  echoFallback: true,
 };
 
 function parsePositiveInt(raw: string | undefined, fallback: number, max?: number): number {
@@ -91,6 +104,14 @@ function pickLlmUrl(env: NodeJS.ProcessEnv): string {
     return env.PROMPT_GATE_EXTERNAL_LLM.trim();
   }
   return env.PROMPT_GATE_LLM_BASE_URL?.trim() || DEFAULTS.baseUrl;
+}
+
+function parseBool(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return true;
+  if (v === 'false' || v === '0' || v === 'no' || v === 'off') return false;
+  return fallback;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConfig {
@@ -123,8 +144,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConf
   const thinking = env.PROMPT_GATE_LLM_ENABLE_THINKING?.trim();
   if (thinking !== undefined && thinking !== '') {
     const bool = thinking === 'true' ? true : thinking === 'false' ? false : thinking;
-    extraBody.thinking = bool;            // llama.cpp parameter
-    extraBody.enable_thinking = bool;     // OpenAI / custom providers
+    extraBody.thinking = bool; // llama.cpp parameter
+    extraBody.enable_thinking = bool; // OpenAI / custom providers
   }
   const extraJson = env.PROMPT_GATE_LLM_EXTRA_JSON?.trim();
   if (extraJson !== undefined && extraJson !== '') {
@@ -150,6 +171,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConf
   const customProviderModule =
     provider === 'custom' ? env.PROMPT_GATE_CUSTOM_PROVIDER_MODULE?.trim() || undefined : undefined;
 
+  // When the client does not support elicitation, whether to render the
+  // three choices in text and accept a re-call with the user's `selection`.
+  const echoFallback = parseBool(env.PROMPT_GATE_ECHO_FALLBACK, DEFAULTS.echoFallback);
+
   return {
     llm: {
       provider,
@@ -168,5 +193,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConf
     httpPort,
     policyFile,
     logLevel,
+    echoFallback,
   };
 }
