@@ -17,6 +17,7 @@
  */
 
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RewriteService } from '../rewrite/rewrite.js';
 import { LLMError } from '../rewrite/rewrite.js';
@@ -72,7 +73,7 @@ export async function handleReviewAndSelect(
   const { log, rewrite } = deps;
 
   const input = ReviewAndSelectInputSchema.parse(rawInput);
-  const requestId = Math.random().toString(36).slice(2, 10);
+  const requestId = randomUUID().slice(0, 8);
   const start = Date.now();
 
   log.info('review_and_select_prompt: started', { requestId, promptLen: input.prompt.length });

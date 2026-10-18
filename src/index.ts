@@ -87,6 +87,7 @@ export async function buildServer(
     log,
     detectCapabilities: detect,
     llmConfig: cfg.llm,
+    policyFile: cfg.policyFile,
   });
 
   // When the client sends initialize, the SDK calls oninitialize; we can't

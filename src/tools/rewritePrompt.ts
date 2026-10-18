@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RewriteService } from '../rewrite/rewrite.js';
 import { LLMError } from '../rewrite/rewrite.js';
@@ -52,7 +53,7 @@ export function registerRewritePromptTool(server: McpServer, rewrite: RewriteSer
     },
     async (rawInput) => {
       const input = RewritePromptInputSchema.parse(rawInput);
-      const requestId = Math.random().toString(36).slice(2, 10);
+      const requestId = randomUUID().slice(0, 8);
       const start = Date.now();
 
       try {

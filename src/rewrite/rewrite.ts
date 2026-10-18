@@ -9,6 +9,7 @@
  *   inside the prompt that try to override the rewriting policy.
  */
 
+import { readFileSync, existsSync } from 'node:fs';
 import type { LLMProvider } from '../llm/provider.js';
 import { withRetry } from '../llm/provider.js';
 import type { RewriteLevel, RewriteResult } from '../types.js';
@@ -17,6 +18,12 @@ export interface RewriteOptions {
   level?: RewriteLevel;
   language?: string;
   context?: string;
+  /**
+   * Optional path to a custom meta-prompt policy file (markdown or plain
+   * text). When provided, its content replaces the built-in META_PROMPTS
+   * for the level. This is the extension point for `PROMPT_GATE_REWRITE_POLICY_FILE`.
+   */
+  policyFile?: string;
 }
 
 /**
@@ -77,12 +84,40 @@ export function buildMetaPrompt(level: RewriteLevel): string {
 export class RewriteService {
   constructor(
     private readonly provider: LLMProvider,
-    private readonly retryMax = 3
+    private readonly retryMax = 3,
+    private readonly defaultPolicyFile?: string
   ) {}
 
   async rewrite(prompt: string, opts: RewriteOptions = {}): Promise<RewriteResult> {
     const level = opts.level ?? 'balanced';
-    const meta = buildMetaPrompt(level);
+
+    // Resolve the active policy file: explicit opt wins, else the global
+    // default (from PROMPT_GATE_REWRITE_POLICY_FILE), else built-in meta.
+    const policyFile = opts.policyFile ?? this.defaultPolicyFile;
+
+    // Extension point: a custom policy file replaces the built-in meta-prompt.
+    // Missing file is a hard error (we refuse to silently fall back to the
+    // default, which would hide a misconfiguration).
+    let meta: string;
+    if (policyFile) {
+      if (!existsSync(policyFile)) {
+        throw new LLMError(
+          `Rewrite policy file not found: ${policyFile}`,
+          new Error('policy file missing'),
+          0
+        );
+      }
+      meta = readFileSync(policyFile, 'utf8').trim();
+      if (meta.length === 0) {
+        throw new LLMError(
+          `Rewrite policy file is empty: ${policyFile}`,
+          new Error('policy file empty'),
+          0
+        );
+      }
+    } else {
+      meta = buildMetaPrompt(level);
+    }
 
     const userMsg = buildUserMessage(prompt, opts);
     const start = Date.now();
@@ -113,10 +148,16 @@ export class RewriteService {
       warnings.push('Rewritten prompt is significantly shorter than the original; check for truncation.');
     }
 
+    const parts: string[] = [`"${level}" enrichment level`];
+    if (opts.context && opts.context.trim().length > 0) parts.push('user context applied');
+    if (opts.language && opts.language.trim().length > 0)
+      parts.push(`language preference: ${opts.language.trim()}`);
+    if (policyFile) parts.push('custom policy file');
+
     return {
       originalPrompt: prompt,
       rewrittenPrompt: trimmed,
-      changesSummary: `Rewrote prompt using "${level}" enrichment level.`,
+      changesSummary: `Rewrote prompt using ${parts.join(', ')}.`,
       warnings: warnings.length > 0 ? warnings : undefined,
     };
   }

@@ -22,11 +22,13 @@ export interface ToolDeps {
   reviewDeps?: Partial<ReviewDeps>;
   /** LLM config, used to configure retry behavior for the rewrite service. */
   llmConfig?: LLMConfig;
+  /** Global default policy file (from PROMPT_GATE_REWRITE_POLICY_FILE). */
+  policyFile?: string;
 }
 
 export function registerAllTools(deps: ToolDeps): void {
   const retryMax = deps.llmConfig?.retryMax ?? 3;
-  const rewrite = new RewriteService(deps.llm, retryMax);
+  const rewrite = new RewriteService(deps.llm, retryMax, deps.policyFile);
   registerRewritePromptTool(deps.server, rewrite, deps.log);
 
   const reviewDeps: ReviewDeps = {
