@@ -32,8 +32,8 @@ describe('Concurrent independent sessions', () => {
     };
 
     const [resA, resB] = await Promise.all([
-      handleReviewAndSelect(d1, { prompt: 'x' }),
-      handleReviewAndSelect(d2, { prompt: 'y' }),
+      handleReviewAndSelect(d1, { prompt: 'x', context: 'test' }),
+      handleReviewAndSelect(d2, { prompt: 'y', context: 'test' }),
     ]);
 
     expect(resA.structuredContent).toMatchObject({
@@ -57,7 +57,7 @@ describe('Concurrent independent sessions', () => {
     const disconnecting = async () => {
       throw new Error('client disconnected');
     };
-    const res = await handleReviewAndSelect({ ...deps, elicit: disconnecting }, { prompt: 'p' });
+    const res = await handleReviewAndSelect({ ...deps, elicit: disconnecting }, { prompt: 'p', context: 'test' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.selected_prompt).toBeNull();
   });

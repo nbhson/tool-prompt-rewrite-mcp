@@ -26,13 +26,32 @@ import { GateError, type ReviewResult } from '../types.js';
 import type { Logger } from '../logger.js';
 
 export const ReviewAndSelectInputSchema = z.object({
-  prompt: z.string().min(1).max(32_000).describe('The original prompt to review.'),
-  language: z.string().max(32).optional().describe('Preferred output language.'),
-  context: z.string().max(8_000).optional().describe('Additional context from the user.'),
+  prompt: z
+    .string()
+    .min(1)
+    .max(32_000)
+    .describe('The original prompt to review. This is the user\'s latest message only.'),
+  language: z
+    .string()
+    .max(32)
+    .optional()
+    .describe('Preferred output language. Omit to keep the original language.'),
+  context: z
+    .string()
+    .max(8_000)
+    .describe(
+      '1-3 sentences summarizing the conversation/session so far (what the user has asked, ' +
+        'what files/topics are in play, what was decided). STRONGLY RECOMMENDED: pass this ' +
+        'on every call so the rewrite is grounded in prior context. Omit only for brand-new ' +
+        'sessions with no history.'
+    ),
   rewrite_level: z
     .enum(['light', 'balanced', 'detailed'])
     .optional()
-    .describe('How much enrichment to apply. Defaults to "balanced".'),
+    .describe(
+      'How much enrichment to apply. "light" = minimal; "balanced" (default) = add missing ' +
+        'structure/context/criteria; "detailed" = full spec with acceptance criteria.'
+    ),
 });
 
 export type ReviewAndSelectInput = z.infer<typeof ReviewAndSelectInputSchema>;
@@ -229,7 +248,17 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         'choose: use original, use rewritten, or cancel. Returns only the ' +
         'approved prompt. Cancellation is a distinct outcome and never ' +
         'exposes an approved prompt. If the client does not support MCP ' +
-        'elicitation, the call returns a clear compatibility error.',
+        'elicitation, the call returns a clear compatibility error.\n' +
+        '\n' +
+        'CALLING GUIDE (for the LLM):\n' +
+        '- ALWAYS pass a short `context` (1-3 sentences) summarizing the ' +
+        'conversation/session so far, so the rewrite is grounded in what ' +
+        'the user has already said or done. Do not omit it.\n' +
+        '- Choose `rewrite_level` to fit the task: `light` for quick one-shot ' +
+        'answers, `balanced` (default) for most coding/research work, ' +
+        '`detailed` when the user explicitly wants a fully-specified spec.\n' +
+        '- Pass `language` only when the user wants the rewritten prompt in ' +
+        'a language different from the original.',
       inputSchema: {
         prompt: ReviewAndSelectInputSchema.shape.prompt,
         language: ReviewAndSelectInputSchema.shape.language,

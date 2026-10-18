@@ -15,7 +15,7 @@ function depsWithReply(reply: string, elicit?: ReviewDeps['elicit']): ReviewDeps
 describe('Cancellation & fallback guarantees', () => {
   it('cancellation NEVER exposes selected_prompt (distinct outcome)', async () => {
     const deps = depsWithReply('Enriched', async () => ({ action: 'cancel' }));
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.structuredContent?.status).toBe('cancelled');
     expect(res.structuredContent?.selected_prompt).toBeNull();
     // The text also makes it explicit.
@@ -27,7 +27,7 @@ describe('Cancellation & fallback guarantees', () => {
     const failing = new MockProvider({ kind: 'throw', error: 'ECONNREFUSED' });
     const server = new McpServer({ name: 't', version: '0.0.1' }, { capabilities: { tools: {} } });
     const deps: ReviewDeps = { server, rewrite: new RewriteService(failing), log: quiet };
-    const res = await handleReviewAndSelect(deps, { prompt: 'original-prompt' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'original-prompt', context: 'test session' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.status).toBe('error');
     expect(res.structuredContent?.selected_prompt).toBeNull();
@@ -40,7 +40,7 @@ describe('Cancellation & fallback guarantees', () => {
       // Simulate timeout / abort before user chose.
       throw new Error('aborted');
     });
-    const res = await handleReviewAndSelect(deps, { prompt: 'p' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'p', context: 'test session' });
     // Any failure in elicitation is a distinct error — never a silent
     // default to "original".
     expect(res.isError).toBe(true);

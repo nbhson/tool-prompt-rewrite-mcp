@@ -29,7 +29,7 @@ const elicitationUnsupported = () => async () => {
 describe('handleReviewAndSelect', () => {
   it('user selects ORIGINAL → returns original, not rewritten', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, choose('original'));
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toMatchObject({
       status: 'approved',
@@ -40,7 +40,7 @@ describe('handleReviewAndSelect', () => {
 
   it('user selects REWRITTEN → returns enriched, not original', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, choose('rewritten'));
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toMatchObject({
       status: 'approved',
@@ -51,7 +51,7 @@ describe('handleReviewAndSelect', () => {
 
   it('user CANCELs → distinct cancelled outcome, selectedPrompt=null', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, cancel());
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toMatchObject({
       status: 'cancelled',
@@ -65,13 +65,13 @@ describe('handleReviewAndSelect', () => {
     // Simulate the client aborting the elicitation itself.
     const cancelOutcome = async () => ({ action: 'cancel' }) as const;
     const deps2 = { ...deps, elicit: cancelOutcome };
-    const res = await handleReviewAndSelect(deps2, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps2, { prompt: 'hello', context: 'test session' });
     expect(res.structuredContent).toMatchObject({ status: 'cancelled', selected_prompt: null });
   });
 
   it('LLM failure → error outcome, NOT a silent fallback to original', async () => {
     const deps = makeDeps({ kind: 'timeout' });
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent).toMatchObject({
       status: 'error',
@@ -84,7 +84,7 @@ describe('handleReviewAndSelect', () => {
 
   it('Elicitation unsupported → compatibility error, prompt NOT forwarded', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
-    const res = await handleReviewAndSelect(deps, { prompt: 'hello' });
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent).toMatchObject({
       status: 'error',
@@ -99,7 +99,7 @@ describe('handleReviewAndSelect', () => {
     const invalid = async () => {
       throw new GateError('invalid_input', 'selected not in enum');
     };
-    const res = await handleReviewAndSelect({ ...deps, elicit: invalid }, { prompt: 'hello' });
+    const res = await handleReviewAndSelect({ ...deps, elicit: invalid }, { prompt: 'hello', context: 'test' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent).toMatchObject({
       status: 'error',
