@@ -1,10 +1,12 @@
----
-title: Universal Prompt Gate — Workflow
----
+# Universal Prompt Gate — Workflow
+
+Sơ đồ workflow tổng thể (Mermaid).
+
+```mermaid
 flowchart TD
   U(["👤 User<br/>gõ prompt trong agent<br/>VD: &quot;thông tin việt nam&quot;"]):::user
 
-  subgraph AGENT["🤖 Coding Agent (client MCP)"]:::agent
+  subgraph AGENT["🤖 Coding Agent (client MCP)"]
     A1["Agent quyết định gọi tool<br/><b>review_and_select_prompt</b>"]:::agent
     A3["Nhận kết quả JSON"]:::agent
     A4{"Dùng kết quả"}:::agent
@@ -12,7 +14,7 @@ flowchart TD
     ASTOP["Dừng / báo hủy<br/>(không forward prompt)"]:::agent
   end
 
-  subgraph MCP["🛡️ Universal Prompt Gate MCP Server (stdio)"]:::mcp
+  subgraph MCP["🛡️ Universal Prompt Gate MCP Server (stdio)"]
     T["Tool: <b>review_and_select_prompt</b><br/>(registerTool)"]:::mcp
     V["Validate input<br/>(Zod, giới hạn độ dài)"]:::mcp
     R["Gọi LLM để rewrite<br/>(RewriteService)"]:::mcp
@@ -26,7 +28,7 @@ flowchart TD
     O3["Cancel<br/>(hủy, không dùng cả 2)"]:::mcp
   end
 
-  subgraph LLM["🧠 LLM local (llama.cpp — OpenAI-compatible)"]:::llm
+  subgraph LLM["🧠 LLM local (llama.cpp)"]
     L1["/v1/chat/completions"]:::llm
   end
 
@@ -35,7 +37,7 @@ flowchart TD
   A1 -->|2. MCP tool call| T
   T --> V
   V -->|prompt hợp lệ| R
-  R -->|3. HTTP fetch<br/>(system + user msg)| L1
+  R -->|3. HTTP fetch system + user msg| L1
   L1 -->|4. completion| R
   R --> RM
   RM -->|thất bại: timeout / HTTP / empty| RE
@@ -59,7 +61,7 @@ flowchart TD
   classDef agent fill:#eef3ff,stroke:#2f4fa8,stroke-width:1.5px,color:#16266b
   classDef mcp fill:#fff7e6,stroke:#b07a12,stroke-width:1.5px,color:#5c3d0a
   classDef llm fill:#f7ecff,stroke:#7030a8,stroke-width:1.5px,color:#3f145e
-  classDef subA fill:#fafcff,stroke:#2f4fa8
-  classDef subM fill:#fffdf7,stroke:#b07a12
-  classDef subL fill:#fdf9ff,stroke:#7030a8
-  classDef user fill:#e6f4ea,stroke:#1b6b3a,stroke-width:2px,color:#0d3d22
+  class AGENT agent
+  class MCP mcp
+  class LLM llm
+```

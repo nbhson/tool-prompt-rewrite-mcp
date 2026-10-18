@@ -121,7 +121,7 @@ Rewrite chạy bằng **LLM local nhỏ** (qwen3.5-9b), tách hoàn toàn khỏi
 
 ### 2.0. Sơ đồ workflow (Mermaid)
 
-> File nguồn: [`docs/WORKFLOW.mmd`](WORKFLOW.mmd) — render trực tiếp trên GitHub.
+> File nguồn: [`docs/WORKFLOW.md`](WORKFLOW.md) — render trực tiếp trên GitHub.
 
 ```mermaid
 flowchart TD

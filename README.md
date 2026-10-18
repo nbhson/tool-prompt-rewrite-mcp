@@ -209,7 +209,7 @@ flowchart TD
   A4 -->|"cancelled / error"| ASTOP
 ```
 
-> File nguồn của sơ đồ: [`docs/WORKFLOW.mmd`](docs/WORKFLOW.mmd).
+> File nguồn của sơ đồ: [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 
 ### Standard MCP Mode
 
@@ -304,7 +304,7 @@ tool-prompt-rewrite-mcp/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── AGENT_INTEGRATION.md
-│   ├── WORKFLOW.mmd
+│   ├── WORKFLOW.md
 │   └── Universal Prompt Gate MCP Architecture.png
 ├── src/
 │   ├── index.ts                  # entry (stdio)
