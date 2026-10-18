@@ -119,6 +119,61 @@ Rewrite chạy bằng **LLM local nhỏ** (qwen3.5-9b), tách hoàn toàn khỏi
 
 ## 2. Luồng hoạt động
 
+### 2.0. Sơ đồ workflow (Mermaid)
+
+> File nguồn: [`docs/WORKFLOW.mmd`](WORKFLOW.mmd) — render trực tiếp trên GitHub.
+
+```mermaid
+flowchart TD
+  U(["👤 User<br/>gõ prompt<br/>VD: &quot;thông tin việt nam&quot;"])
+
+  subgraph AGENT["🤖 Coding Agent (client MCP)"]
+    A1["Gọi tool<br/><b>review_and_select_prompt</b>"]
+    A3["Nhận kết quả JSON"]
+    A4{"Dùng kết quả"}
+    AOK["Gửi <b>selected_prompt</b><br/>tới LLM lớn"]
+    ASTOP["Dừng / báo hủy"]
+  end
+
+  subgraph MCP["🛡️ Universal Prompt Gate MCP Server"]
+    T["Tool: <b>review_and_select_prompt</b>"]
+    V["Validate input (Zod)"]
+    R["Gọi LLM để rewrite"]
+    RM{"LLM ok?"}
+    RE["Trả về error<br/>(<b>không</b> silent fallback)"]
+    E["Hiển thị ORIGINAL &amp; REWRITTEN<br/>qua elicitation"]
+    CHOICE{"User chọn 1 trong 3"}
+    O1["Use original"]
+    O2["Use rewritten"]
+    O3["Cancel"]
+  end
+
+  subgraph LLM["🧠 LLM local (llama.cpp)"]
+    L1["/v1/chat/completions"]
+  end
+
+  U -->|"1. submit prompt"| A1
+  A1 -->|"2. MCP tool call"| T
+  T --> V
+  V -->|"hợp lệ"| R
+  R -->|3. fetch| L1
+  L1 -->|4. completion| R
+  R --> RM
+  RM -->|thất bại| RE
+  RM -->|thành công| E
+  E -->|5. elicitation| CHOICE
+  CHOICE -->|6a| O1
+  CHOICE -->|6b| O2
+  CHOICE -->|6c| O3
+  O1 -->|7a. approved| A3
+  O2 -->|7b. approved| A3
+  O3 -->|7c. cancelled| A3
+  RE -->|error| A3
+  A3 --> A4
+  A4 -->|"approved"| AOK
+  A4 -->|"cancelled / error"| ASTOP
+```
+
 ### 2.1. Standard MCP Mode
 
 ```
