@@ -27,7 +27,7 @@ sent to the model — that is the job of `review_and_select_prompt`.
 | --------------- | -------- | --------------------------------------------------------------------- |
 | `prompt`        | yes      | The user's **latest message only**, not the whole session.           |
 | `context`       | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history. |
-| `language`      | no       | Output language when it differs from the original, e.g. `"english"`. |
+| `language`      | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language (e.g. "rewrite in English"). Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
 | `rewrite_level` | no       | `light` (minimal), `balanced` (default), `detailed` (full spec).     |
 
 ## Choosing `rewrite_level`
@@ -36,6 +36,17 @@ sent to the model — that is the job of `review_and_select_prompt`.
 - **`balanced`** — most coding / research / analysis work (default).
 - **`detailed`** — when the user explicitly wants a fully-specified spec with
   acceptance criteria.
+
+## Language rule (do not drift)
+
+The server **auto-detects the prompt's language** and preserves it by default.
+
+- **Do not pass `language`** unless the user *explicitly* asks for a different
+  output language (e.g. "viết lại bằng tiếng Anh" / "rewrite this in English").
+- A Vietnamese prompt stays Vietnamese; a Japanese prompt stays Japanese.
+- Passing `language: "english"` because "English is clearer" is a **drift**,
+  not an improvement. It overrides the user's language and breaks the
+  "preserve the user's language" rule.
 
 ## How to call
 

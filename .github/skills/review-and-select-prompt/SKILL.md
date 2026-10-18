@@ -28,7 +28,7 @@ use the `rewrite-prompt` skill instead.
 | --------------- | -------- | --------------------------------------------------------------------- |
 | `prompt`        | yes      | The user's **latest message only**, not the whole session.           |
 | `context`       | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history. |
-| `language`      | no       | Output language when it differs from the original.                   |
+| `language`      | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
 | `rewrite_level` | no       | `light` / `balanced` (default) / `detailed`.                         |
 
 ## How it behaves

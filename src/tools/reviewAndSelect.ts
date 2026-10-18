@@ -35,7 +35,13 @@ export const ReviewAndSelectInputSchema = z.object({
     .string()
     .max(32)
     .optional()
-    .describe('Preferred output language. Omit to keep the original language.'),
+    .describe(
+      'Output language, e.g. "english" or "vietnamese". ONLY pass this when the ' +
+        'user explicitly asks for a different output language. If the user has not ' +
+        'asked, omit it — the server auto-detects the prompt\'s language and ' +
+        'preserves it. Do NOT pass "english" just to "improve clarity"; that ' +
+        'switches the output language and is a drift.'
+    ),
   context: z
     .string()
     .max(8_000)
@@ -258,7 +264,9 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         'answers, `balanced` (default) for most coding/research work, ' +
         '`detailed` when the user explicitly wants a fully-specified spec.\n' +
         '- Pass `language` only when the user wants the rewritten prompt in ' +
-        'a language different from the original.',
+        'a language different from the original. Do NOT switch the language ' +
+        'on your own judgment — the server auto-detects the prompt language ' +
+        'and preserves it by default.',
       inputSchema: {
         prompt: ReviewAndSelectInputSchema.shape.prompt,
         language: ReviewAndSelectInputSchema.shape.language,
