@@ -7,8 +7,12 @@
 
 export type TransportKind = 'stdio' | 'http';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+/** Known built-in provider ids. */
+export type ProviderKind = 'openai-compatible' | 'openai' | 'custom';
 
 export interface LLMConfig {
+  /** Which provider implementation to use. See {@link ProviderKind}. */
+  provider: ProviderKind;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -29,6 +33,13 @@ export interface LLMConfig {
    * Providers that don't know the field will ignore it.
    */
   extraBody?: Record<string, unknown>;
+  /**
+   * When `provider: 'custom'`, the module path to a local factory that
+   * exports `createCustomLLMProvider(cfg: LLMConfig): LLMProvider`.
+   * Allows shipping your own provider (e.g. a .env-driven local one)
+   * without editing the package source.
+   */
+  customProviderModule?: string;
 }
 
 export interface PromptGateConfig {
@@ -57,6 +68,7 @@ const DEFAULTS = {
   // is too tight. 2048 is enough for a short, structured rewrite.
   maxTokens: 2048,
   temperature: 0.2,
+  provider: 'openai-compatible' as const,
 };
 
 function parsePositiveInt(raw: string | undefined, fallback: number, max?: number): number {
@@ -127,8 +139,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConf
     }
   }
 
+  const providerRaw = (env.PROMPT_GATE_PROVIDER?.trim() || DEFAULTS.provider).toLowerCase();
+  const provider: ProviderKind =
+    providerRaw === 'openai' || providerRaw === 'custom' || providerRaw === 'openai-compatible'
+      ? providerRaw
+      : 'openai-compatible';
+
+  // Path to a local module that exports createCustomLLMProvider(cfg).
+  // Only used when provider === 'custom'.
+  const customProviderModule =
+    provider === 'custom' ? env.PROMPT_GATE_CUSTOM_PROVIDER_MODULE?.trim() || undefined : undefined;
+
   return {
     llm: {
+      provider,
       baseUrl,
       model,
       apiKey,
@@ -137,6 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PromptGateConf
       maxTokens,
       temperature: DEFAULTS.temperature,
       ...(Object.keys(extraBody).length > 0 ? { extraBody } : {}),
+      ...(customProviderModule !== undefined ? { customProviderModule } : {}),
     },
     externalLlm: env.PROMPT_GATE_EXTERNAL_LLM?.trim() || undefined,
     transport,

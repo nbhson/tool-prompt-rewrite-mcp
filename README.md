@@ -152,6 +152,101 @@ Hoặc nếu đã publish lên npm:
 
 Mỗi agent có cơ chế cấu hình khác nhau — xem [ma trận tương thích](docs/ARCHITECTURE.md#3-ma-trận-tương-thích-agent).
 
+### Truyền cấu hình (env) cho server — 3 cách
+
+Server đọc config theo thứ tự ưu tiên (cao hơn thắng):
+
+```
+1. env thật (client truyền qua `env`/`environment` trong JSON MCP)
+2. file `.env` (auto-load: PROMPT_GATE_ENV_FILE → CWD → cạnh build/index.js)
+3. defaults built-in
+```
+
+#### Cách A — `env` trong JSON (khuyến nghị khi publish)
+
+Claude Code / Cursor / VS Code Copilot dùng key `mcpServers` (hoặc `servers`) + trường `env`:
+
+```json
+{
+  "mcpServers": {
+    "prompt-gate": {
+      "command": "node",
+      "args": ["/absolute/path/to/build/index.js"],
+      "env": {
+        "PROMPT_GATE_LLM_BASE_URL": "http://127.0.0.1:8080/v1",
+        "PROMPT_GATE_LLM_MODEL": "qwen3.5-9b",
+        "PROMPT_GATE_LLM_MAX_TOKENS": "4096",
+        "PROMPT_GATE_TIMEOUT_MS": "300000",
+        "PROMPT_GATE_LLM_ENABLE_THINKING": "false"
+      }
+    }
+  }
+}
+```
+
+> OpenCode V2 dùng `mcp.servers` + trường `environment`, và `command` là mảng:
+>
+> ```jsonc
+> {
+>   "mcp": {
+>     "servers": {
+>       "prompt-gate": {
+>         "type": "local",
+>         "command": ["node", "/absolute/path/to/build/index.js"],
+>         "environment": { "PROMPT_GATE_LLM_MODEL": "qwen3.5-9b" }
+>       }
+>     }
+>   }
+> }
+> ```
+
+#### Cách B — file `.env` (local dev)
+
+Copy `.env.example` → `.env` ở root repo. Server **tự load** khi khởi động (không cần `env` trong JSON). Khi client spawn server từ CWD khác, server sẽ tìm `.env` cạnh `build/index.js` (repo). Set `PROMPT_GATE_ENV_FILE=/duong/dan/.env` để chỉ đúng file.
+
+#### Cách C — Custom provider (ship riêng, dùng khi publish)
+
+```json
+"env": {
+  "PROMPT_GATE_PROVIDER": "custom",
+  "PROMPT_GATE_CUSTOM_PROVIDER_MODULE": "/absolute/path/to/my-provider.js"
+}
+```
+
+`my-provider.js` phải export:
+
+```js
+export function createCustomLLMProvider(cfg) {
+  // cfg: LLMConfig (baseUrl, model, apiKey, timeoutMs, retryMax, maxTokens, …)
+  return {
+    isConfigured: () => true,
+    chat: async (messages, options) => {
+      // gọi endpoint/model/API của bạn, trả về STRING (completion).
+      // Ném Error khi lỗi — server sẽ map thành GateError.
+      return await callYourApi(messages, options);
+    },
+  };
+}
+```
+
+→ Bạn ship provider này như 1 package riêng (vd `@me/my-llm-provider`), trỏ `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` tới file đã cài (`require.resolve` / path tuyệt đối). Không cần sửa nguồn package prompt-gate.
+
+### Các biến env liên quan tới provider
+
+| Biến | Mặc định | Ý nghĩa |
+| --- | --- | --- |
+| `PROMPT_GATE_PROVIDER` | `openai-compatible` | `openai-compatible` / `openai` / `custom` |
+| `PROMPT_GATE_CUSTOM_PROVIDER_MODULE` | _(unset)_ | Path module custom (chỉ dùng khi provider=custom) |
+| `PROMPT_GATE_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | Endpoint OpenAI-compatible |
+| `PROMPT_GATE_EXTERNAL_LLM` | _(unset)_ | Override baseUrl (cloud endpoint) |
+| `PROMPT_GATE_LLM_MODEL` | `qwen3.5-9b` | Tên model |
+| `PROMPT_GATE_LLM_MAX_TOKENS` | `2048` | Completion tokens tối đa |
+| `PROMPT_GATE_TIMEOUT_MS` | `180000` | Timeout (ms) |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_ | `true`/`false` — tắt reasoning (qwen3/llama.cpp) |
+| `PROMPT_GATE_LLM_EXTRA_JSON` | _(unset)_ | JSON gộp vào request body LLM |
+| `PROMPT_GATE_ENV_FILE` | _(unset)_ | Path file `.env` explicit |
+
+
 ### Khi nào nên dùng tool nào
 
 - **`rewrite_prompt`** — khi chỉ muốn xem bản enrich, chưa cần user gate (vd preview).
