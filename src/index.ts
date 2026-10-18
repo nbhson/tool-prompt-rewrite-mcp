@@ -51,7 +51,13 @@ export function buildServer(configOverride?: Parameters<typeof loadConfig>[0]): 
 
   const detect = (): ClientCapabilities => caps.current;
 
-  registerAllTools({ server, llm, log, detectCapabilities: detect });
+  registerAllTools({
+    server,
+    llm,
+    log,
+    detectCapabilities: detect,
+    llmConfig: cfg.llm,
+  });
 
   // When the client sends initialize, the SDK calls oninitialize; we can't
   // easily override it here, so instead we lazily refresh on first tool call

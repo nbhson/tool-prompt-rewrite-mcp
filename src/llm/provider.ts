@@ -40,19 +40,30 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const timeout = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
 
     try {
+      const body: Record<string, unknown> = {
+        model: this.cfg.model,
+        messages,
+        temperature: options?.temperature ?? this.cfg.temperature,
+        max_tokens: options?.maxTokens ?? this.cfg.maxTokens,
+        stream: false,
+      };
+      // Thinking models spend the token budget on reasoning_content and
+      // leave message.content empty — even when the provider claims
+      // thinking is off. Treat reasoning_content as a fallback so the
+      // pipeline still has text to work with.
+      if (this.cfg.extraBody?.thinking === false) {
+        body.thinking_budget = 0;
+      }
+      // Merge passthrough fields (e.g. enable_thinking for qwen3/llama.cpp).
+      if (this.cfg.extraBody) Object.assign(body, this.cfg.extraBody);
+
       const res = await fetch(`${this.cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.cfg.apiKey}`,
         },
-        body: JSON.stringify({
-          model: this.cfg.model,
-          messages,
-          temperature: options?.temperature ?? 0.2,
-          max_tokens: options?.maxTokens ?? 1024,
-          stream: false,
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 
@@ -63,11 +74,25 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
       const json = (await res.json()) as unknown;
       const out = extractCompletionText(json);
-      if (out === null) {
-        throw new Error('LLM returned malformed completion (no content[0].text).');
-      }
-      const trimmed = out.trim();
+      const trimmed = out?.trim() ?? '';
+      // Thinking models via llama.cpp may return empty `content` while
+      // putting the answer in `reasoning_content`. Surface a diagnosable
+      // error so the user knows to either:
+      //   1. run a non-thinking model (e.g. qwen2.5-7b), or
+      //   2. confirm their llama.cpp build actually honors thinking:false.
       if (trimmed.length === 0) {
+        const reasoning = extractReasoningContent(json);
+        if (out === null) {
+          throw new Error('LLM returned malformed completion (no content[0].text).');
+        }
+        if (reasoning !== null && reasoning.trim().length > 0) {
+          throw new Error(
+            'LLM returned empty content but produced reasoning_content; ' +
+            'your model is a thinking variant that is not respecting ' +
+            'thinking:false. Use a non-thinking model (e.g. qwen2.5-7b) ' +
+            'or a llama.cpp build that supports thinking:false.'
+          );
+        }
         throw new Error('LLM returned an empty completion.');
       }
       return trimmed;
@@ -97,8 +122,33 @@ function extractCompletionText(json: unknown): string | null {
   const message = (first as Record<string, unknown>).message;
   if (typeof message !== 'object' || message === null) return null;
   const content = (message as Record<string, unknown>).content;
-  if (typeof content !== 'string') return null;
-  return content;
+  if (typeof content === 'string') return content;
+  // content may also arrive as a parts array in multimodal responses
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((p): p is { text: string } => typeof p === 'object' && p !== null && typeof (p as { text?: unknown }).text === 'string')
+      .map((p) => p.text)
+      .join('');
+    if (text.length > 0) return text;
+  }
+  return null;
+}
+
+/**
+ * Read `choices[0].message.reasoning_content` (Qwen thinking models via
+ * llama.cpp). Returns null when absent or not a string.
+ */
+function extractReasoningContent(json: unknown): string | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const obj = json as Record<string, unknown>;
+  const choices = obj.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const first = choices[0];
+  if (typeof first !== 'object' || first === null) return null;
+  const message = (first as Record<string, unknown>).message;
+  if (typeof message !== 'object' || message === null) return null;
+  const rc = (message as Record<string, unknown>).reasoning_content;
+  return typeof rc === 'string' ? rc : null;
 }
 
 /**

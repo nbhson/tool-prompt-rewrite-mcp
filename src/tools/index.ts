@@ -4,6 +4,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { LLMProvider } from '../llm/provider.js';
+import type { LLMConfig } from '../config.js';
 import { RewriteService } from '../rewrite/rewrite.js';
 import type { ClientCapabilities } from '../capability/capability.js';
 import type { Logger } from '../logger.js';
@@ -19,10 +20,13 @@ export interface ToolDeps {
   detectCapabilities: () => ClientCapabilities;
   /** Optional injection point for tests to stub the elicitation step. */
   reviewDeps?: Partial<ReviewDeps>;
+  /** LLM config, used to configure retry behavior for the rewrite service. */
+  llmConfig?: LLMConfig;
 }
 
 export function registerAllTools(deps: ToolDeps): void {
-  const rewrite = new RewriteService(deps.llm);
+  const retryMax = deps.llmConfig?.retryMax ?? 3;
+  const rewrite = new RewriteService(deps.llm, retryMax);
   registerRewritePromptTool(deps.server, rewrite, deps.log);
 
   const reviewDeps: ReviewDeps = {

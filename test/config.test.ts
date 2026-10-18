@@ -38,7 +38,31 @@ describe('loadConfig', () => {
 
   it('clamps invalid timeout values to fallback', () => {
     const cfg = loadConfig({ PROMPT_GATE_TIMEOUT_MS: 'not-a-number' });
-    expect(cfg.llm.timeoutMs).toBe(60_000);
+    expect(cfg.llm.timeoutMs).toBe(180_000);
+  });
+
+  it('reads maxTokens and retryMax env vars', () => {
+    const cfg = loadConfig({
+      PROMPT_GATE_LLM_MAX_TOKENS: '4096',
+      PROMPT_GATE_LLM_RETRY_MAX: '5',
+    });
+    expect(cfg.llm.maxTokens).toBe(4096);
+    expect(cfg.llm.retryMax).toBe(5);
+  });
+
+  it('passes enable_thinking=false through to extraBody (sends both llama.cpp & OpenAI keys)', () => {
+    const cfg = loadConfig({ PROMPT_GATE_LLM_ENABLE_THINKING: 'false' });
+    expect(cfg.llm.extraBody?.thinking).toBe(false);
+    expect(cfg.llm.extraBody?.enable_thinking).toBe(false);
+  });
+
+  it('merges PROMPT_GATE_LLM_EXTRA_JSON into extraBody', () => {
+    const cfg = loadConfig({
+      PROMPT_GATE_LLM_ENABLE_THINKING: 'false',
+      PROMPT_GATE_LLM_EXTRA_JSON: '{"reasoning_effort":"low"}',
+    });
+    expect(cfg.llm.extraBody?.enable_thinking).toBe(false);
+    expect(cfg.llm.extraBody?.reasoning_effort).toBe('low');
   });
 
   it('rejects invalid log level gracefully', () => {

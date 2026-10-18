@@ -80,8 +80,12 @@ Tạo file `.env` (xem `.env.example`) hoặc export trực tiếp:
 | `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)                                                             |
 | `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model                                                                                    |
 | `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local, không cần thật)                                                              |
-| `PROMPT_GATE_TIMEOUT_MS`          | `60000`                                                | Timeout (ms) cho LLM                                                                         |
-| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | `stdio` hoặc `http`                                                                          |
+| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                               | Timeout (ms) cho LLM (thinking models chạy CPU cần thời gian dài hơn) |
+| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                    | Số lần retry cho lỗi network (idempotent)                                              |
+| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Số token completion tối đa (thinking models cần budget lớn)                           |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | `true`/`false` — bật/tắt reasoning (qwen3/llama.cpp thinking models)                   |
+| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào request body LLM (vd: `{"chat_format":"chatml"}`)                  |
+| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | `stdio` hoặc `http`                                                                     |
 | `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud                                                                 |
 | `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset: `news`/`code`/`research`, …) — override default strategy |
 
@@ -349,9 +353,10 @@ tool-prompt-rewrite-mcp/
 
 | Triệu chứng                          | Nguyên nhân                                                | Cách xử lý                                                                                                                 |
 | ------------------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `LLM request timed out`              | llama.cpp quá chậm, model quá lớn, timeout default 60s     | Tăng `PROMPT_GATE_TIMEOUT_MS`, dùng model nhỏ hơn (vd qwen2.5-7b)                                                          |
+| `LLM request timed out`              | llama.cpp quá chậm, model quá lớn, thinking model chạy CPU | Tăng `PROMPT_GATE_TIMEOUT_MS` (vd 300000), tăng `PROMPT_GATE_LLM_MAX_TOKENS` (vd 4096)                                   |
 | `LLM HTTP 401`                       | Sai API key                                                | Kiểm tra `PROMPT_GATE_LLM_API_KEY` khớp với key llama.cpp                                                                  |
-| `LLM returned an empty completion`   | Model không sinh ra text (temperature cao, max_tokens nhỏ) | Giảm `temperature`, tăng `max_tokens` ở provider                                                                           |
+| `LLM returned an empty completion`   | Model không sinh ra text (temperature cao, max_tokens nhỏ) | Giảm `temperature`, tăng `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, tăng nếu cần)                                         |
+| `LLM returned empty content but produced reasoning_content` | Model thinking (qwen3/3.5) không tôn trọng `thinking:false` | Dùng model **không** thinking (vd `qwen2.5-7b`), hoặc update llama.cpp về build hỗ trợ `thinking:false`, hoặc set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ để model có đủ budget |
 | Client báo `elicitation_unsupported` | Agent không support elicitation                            | Dùng tool `get_client_capabilities` trước; chỉ dùng gate tool khi `elicitation_supported: true`                            |
 | Prompt không qua gate khi dùng agent | Agent không có hook (Standard mode)                        | Đây là giới hạn của standard MCP — xem [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-khi-agent-hỗ-trợ-hooks) |
 | `node build/index.js` không chạy     | Chưa build                                                 | `npm run build` trước                                                                                                      |

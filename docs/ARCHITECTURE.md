@@ -305,7 +305,11 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
 | `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)    |
 | `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model LLM                       |
 | `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local)                     |
-| `PROMPT_GATE_TIMEOUT_MS`          | `60000`                                                | Timeout (ms) cho LLM                |
+| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                               | Timeout (ms) cho LLM            |
+| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                    | Retry tối đa (network)          |
+| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Completion tokens tối đa        |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | Bật/tắt reasoning (thinking models) |
+| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào body LLM    |
 | `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | Chế độ transport                    |
 | `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud        |
 | `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset) |

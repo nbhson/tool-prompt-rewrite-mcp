@@ -10,6 +10,7 @@
  */
 
 import type { LLMProvider } from '../llm/provider.js';
+import { withRetry } from '../llm/provider.js';
 import type { RewriteLevel, RewriteResult } from '../types.js';
 
 export interface RewriteOptions {
@@ -74,7 +75,10 @@ export function buildMetaPrompt(level: RewriteLevel): string {
 }
 
 export class RewriteService {
-  constructor(private readonly provider: LLMProvider) {}
+  constructor(
+    private readonly provider: LLMProvider,
+    private readonly retryMax = 3
+  ) {}
 
   async rewrite(prompt: string, opts: RewriteOptions = {}): Promise<RewriteResult> {
     const level = opts.level ?? 'balanced';
@@ -85,10 +89,18 @@ export class RewriteService {
 
     let raw: string;
     try {
-      raw = await this.provider.chat([
-        { role: 'system', content: meta },
-        { role: 'user', content: userMsg },
-      ]);
+      // withRetry only retries transient/network errors (see provider.ts).
+      // A thinking model that burns its token budget and returns an empty
+      // completion is NOT retryable — we surface that explicitly instead of
+      // hammering the endpoint.
+      raw = await withRetry(
+        () =>
+          this.provider.chat([
+            { role: 'system', content: meta },
+            { role: 'user', content: userMsg },
+          ]),
+        this.retryMax
+      );
     } catch (err) {
       // Propagate as a typed error the tool layer can map to a GateError.
       const e = err instanceof Error ? err : new Error(String(err));
