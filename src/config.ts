@@ -54,9 +54,11 @@ export interface PromptGateConfig {
   /**
    * When the connected client does NOT support MCP elicitation, the gate tool
    * cannot show an interactive picker. This flag controls the fallback:
-   * - `true`  (default): return a "pending_user_selection" result that renders
-   *   the three numbered choices in plain text and instructs the agent to re-call
-   *   the tool with the `selection` input once the user has chosen.
+   * - `true`  (default): return "pending_level_selection" (the user picks the
+   *   rewrite level from a plain-text menu; the prompt is not rewritten yet)
+   *   and/or "pending_user_selection" (the rewritten prompt plus the three
+   *   numbered choices in plain text). The agent asks the user and re-calls
+   *   the tool with the user's `rewrite_level` / `selection` input.
    * - `false`: return a hard compatibility error (no fallback) — the strictest
    *   mode, matching the original "no silent fallback" rule.
    */

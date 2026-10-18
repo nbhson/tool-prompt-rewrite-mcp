@@ -1,6 +1,6 @@
 # Universal Prompt Gate MCP Server
 
-> A standalone MCP server that works with many coding agents. It lets users review and select a prompt **before** it is sent to an LLM. It rewrites prompts using a local LLM, displays 3 choices (original / rewritten / cancel), and keeps the flow safe and flexible for agents.
+> A standalone MCP server that works with many coding agents. It lets users review and select a prompt **before** it is sent to an LLM. It rewrites prompts using a local LLM, has the user pick the enrichment level first, displays 3 choices (original / rewritten / cancel), and keeps the flow safe and flexible for agents.
 
 ## Core use case
 
@@ -10,7 +10,8 @@ You type a short prompt in an agent:
 "thông tin việt nam"
 ```
 
-The MCP server rewrites (enriches) it with a local LLM (llama.cpp) into:
+First, the user picks the enrichment level (light / balanced / detailed).
+The MCP server then rewrites (enriches) it with a local LLM (llama.cpp) into:
 
 > "Summarize the latest news about Vietnam today, categorized by economy, politics, society, and technology. Prioritize reliable sources."
 
@@ -27,6 +28,7 @@ The user picks one; the chosen prompt (or a "cancelled" state) is then sent to t
 ## Key features
 
 - **Prompt review & rewrite before sending**: every prompt passes through a "gate"; nothing is forwarded automatically
+- **User picks the enrichment level**: `light` / `balanced` / `detailed` — interactive picker, never agent-chosen
 - **3 user choices**: (1) use the original, (2) use the rewritten, (3) cancel
 - **Rewrite = context enrichment**: adds missing context, output structure, and quality criteria — **no new intent**, avoiding drift
 - **Local LLM rewrite** (llama.cpp, OpenAI-compatible) — prompts never leave your machine
@@ -39,11 +41,11 @@ The user picks one; the chosen prompt (or a "cancelled" state) is then sent to t
 
 ## MCP tools
 
-| Tool                       | Main input                                                                                                                                         | Main output                                                                                                                                                                                                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rewrite_prompt`           | `prompt` (required), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`)                                                      | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                                                                                                                      |
-| `review_and_select_prompt` | `prompt` (required), `language`?, `context`?, `rewrite_level`?; on a second call after `pending_user_selection`: `selection`?, `rewritten_prompt`? | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancelled: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` · No-elicitation fallback: `status=pending_user_selection` + both versions + 3 choices |
-| `get_client_capabilities`  | —                                                                                                                                                  | `elicitation_supported`, `structured_elicitation_supported`, `transport`, `integration_mode`, `mandatory_gating_enforceable`                                                                                                                                                                               |
+| Tool                       | Main input                                                                                                                                                                         | Main output                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rewrite_prompt`           | `prompt` (required), `language`?, `context`?, `rewrite_level` (`light`/`balanced`/`detailed`)                                                                                      | `original_prompt`, `rewritten_prompt`, `changes_summary`, `warnings`?                                                                                                                                                                                                                                                                                                         |
+| `review_and_select_prompt` | `prompt` (required), `language`?, `context`?; after `pending_level_selection` (text fallback): `rewrite_level`?; after `pending_user_selection`: `selection`?, `rewritten_prompt`? | Approved: `status=approved`, `selected_option` (`original`/`rewritten`), `selected_prompt`, `original_prompt`, `rewritten_prompt` · Cancelled: `status=cancelled`, `selected_option=cancel`, `selected_prompt=null` · No-elicitation fallback: `status=pending_level_selection` (level menu; no rewrite yet) then `status=pending_user_selection` + both versions + 3 choices |
+| `get_client_capabilities`  | —                                                                                                                                                                                  | `elicitation_supported`, `structured_elicitation_supported`, `transport`, `integration_mode`, `mandatory_gating_enforceable`                                                                                                                                                                                                                                                  |
 
 > **Key principles:**
 >
@@ -75,27 +77,27 @@ npm run inspector
 
 Create a `.env` file (see `.env.example`) or export the variables directly:
 
-| Variable                          | Default                                                          | Description                                                                                                                                                            |
-| --------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                                       | LLM endpoint (OpenAI-compatible)                                                                                                                                       |
-| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(example — verify against your llama.cpp version)_ | Model name                                                                                                                                                             |
-| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                                  | API key (for local dev, no real key needed)                                                                                                                            |
-| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                                         | LLM timeout in ms (thinking models on CPU need more time)                                                                                                              |
-| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                              | Retry count for network errors (idempotent calls only)                                                                                                                 |
-| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                           | Max completion tokens (thinking models need a larger budget)                                                                                                           |
-| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                                        | `true`/`false` — enable/disable reasoning (qwen3 / llama.cpp thinking models)                                                                                          |
-| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                                        | JSON object merged into the LLM request body (e.g. `{"chat_format":"chatml"}`)                                                                                         |
-| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                           | When the client does not support MCP elicitation, the gate tool returns a `pending_user_selection` text menu instead of a hard error (agent re-calls with `selection`) |
-| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                          | `stdio` or `http`                                                                                                                                                      |
-| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                                        | Optional: cloud LLM endpoint                                                                                                                                           |
-| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                                        | Custom meta-prompt policy file (presets: `news`/`code`/`research`, …) — overrides the default strategy                                                                 |
+| Variable                          | Default                                                          | Description                                                                                                                                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                                       | LLM endpoint (OpenAI-compatible)                                                                                                                                                                                    |
+| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(example — verify against your llama.cpp version)_ | Model name                                                                                                                                                                                                          |
+| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                                  | API key (for local dev, no real key needed)                                                                                                                                                                         |
+| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                                         | LLM timeout in ms (thinking models on CPU need more time)                                                                                                                                                           |
+| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                              | Retry count for network errors (idempotent calls only)                                                                                                                                                              |
+| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                           | Max completion tokens (thinking models need a larger budget)                                                                                                                                                        |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                                        | `true`/`false` — enable/disable reasoning (qwen3 / llama.cpp thinking models)                                                                                                                                       |
+| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                                        | JSON object merged into the LLM request body (e.g. `{"chat_format":"chatml"}`)                                                                                                                                      |
+| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                           | When the client does not support MCP elicitation, the gate tool returns `pending_level_selection` / `pending_user_selection` text menus instead of a hard error (agent re-calls with `rewrite_level` / `selection`) |
+| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                          | `stdio` or `http`                                                                                                                                                                                                   |
+| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                                        | Optional: cloud LLM endpoint                                                                                                                                                                                        |
+| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                                        | Custom meta-prompt policy file (presets: `news`/`code`/`research`, …) — overrides the default strategy                                                                                                              |
 
 > **Two separate axes:**
 >
-> - **Per-call** (tool input): `rewrite_level` — `light` / `balanced` / `detailed`
+> - **Per-call**: `rewrite_level` — `light` / `balanced` / `detailed`. In the **gate tool** (`review_and_select_prompt`) it is **chosen by the user** via the picker (the agent must not decide it); in `rewrite_prompt` (no picker) the agent chooses it directly.
 > - **Global default** (env): `PROMPT_GATE_REWRITE_POLICY_FILE` — the meta-prompt preset
 >
-> When calling a tool, `rewrite_level` decides the enrichment depth for that call; `PROMPT_GATE_REWRITE_POLICY_FILE` selects the meta-prompt used as the system prompt. `qwen3.5-9b` is an **example** — verify the model name against your llama.cpp version.
+> `rewrite_level` decides the enrichment depth for that call; `PROMPT_GATE_REWRITE_POLICY_FILE` selects the meta-prompt used as the system prompt. `qwen3.5-9b` is an **example** — verify the model name against your llama.cpp version.
 
 ## When the client does not support elicitation (text fallback)
 
@@ -104,29 +106,47 @@ Some agents (older VS Code, Cline, Continue, …) do not declare the MCP
 `review_and_select_prompt` cannot show an interactive picker. The server has
 two behaviors, controlled by `PROMPT_GATE_ECHO_FALLBACK`:
 
-- **`true` (default) — echo fallback:** the tool returns a distinct
-  `status: "pending_user_selection"` result. It renders both versions in
-  plain text with the three numbered choices:
+- **`true` (default) — echo fallback:** the flow runs over plain-text menus
+  instead, as up to 3 calls:
 
-  ```text
-  [1] original — use the user's exact text
-  [2] rewritten — use the LLM-enriched version
-  [3] cancel — use neither; abort the prompt gate
-  ```
+  1. **Level menu.** The first call returns
+     `status: "pending_level_selection"` (the prompt has **not** been
+     rewritten yet — no LLM call) with the three numbered levels:
 
-  The agent shows this menu to the user; when the user answers, the agent
-  re-calls `review_and_select_prompt` with `selection` set to
-  `"original"` / `"rewritten"` / `"cancel"` (and, for `rewritten`, the
-  `rewritten_prompt` text the user saw). The second call does **not** invoke
-  the LLM again and returns the normal approved/cancelled outcome.
+     ```text
+     [1] light — minimal changes; keep close to the original
+     [2] balanced — add missing structure, context, and quality criteria
+     [3] detailed — full spec with acceptance criteria
+     ```
+
+     The agent asks the user which level to use and re-calls the tool with
+     the SAME inputs plus `rewrite_level` set to the user's choice. The agent
+     must never pick for the user.
+
+  2. **Selection menu.** The tool now rewrites the prompt and returns
+     `status: "pending_user_selection"` with both versions in plain text and
+     the three numbered choices:
+
+     ```text
+     [1] original — use the user's exact text
+     [2] rewritten — use the LLM-enriched version
+     [3] cancel — use neither; abort the prompt gate
+     ```
+
+     The agent asks the user, then re-calls with `selection` set to
+     `"original"` / `"rewritten"` / `"cancel"` (and, for `rewritten`, the
+     `rewritten_prompt` text the user saw).
+
+  3. **Final call.** Returns the normal approved/cancelled outcome. This
+     call does **not** invoke the LLM again.
 
 - **`false` — strict:** the tool returns a hard compatibility error, as in
   the original design. Use this when you want to refuse to gate at all
   unless the client supports elicitation.
 
 The echo fallback is **not** a silent fallback: it never auto-selects, never
-forwards the prompt without an explicit user choice, and cancellation still
-exposes no approved prompt.
+forwards the prompt without an explicit user choice (level **and** version),
+and cancellation still exposes no approved prompt.
 
 ## Run a local LLM (llama.cpp)
 
@@ -303,7 +323,8 @@ flowchart TD
   subgraph MCP["🛡️ Universal Prompt Gate MCP Server"]
     T["Tool: <b>review_and_select_prompt</b>"]
     V["Validate input (Zod)"]
-    R["Call LLM to rewrite"]
+    LP["User picks rewrite LEVEL<br/>light / balanced / detailed<br/>(mandatory, before rewrite)"]
+    R["Call LLM to rewrite at that level"]
     RM{"LLM ok?"}
     RE["Return error<br/>(<b>no</b> silent fallback)"]
     E["Show ORIGINAL &amp; REWRITTEN<br/>via elicitation"]
@@ -320,19 +341,20 @@ flowchart TD
   U -->|"1. submit prompt"| A1
   A1 -->|"2. MCP tool call"| T
   T --> V
-  V -->|"valid"| R
-  R -->|3. fetch| L1
-  L1 -->|4. completion| R
+  V -->|"valid"| LP
+  LP -->|"3. elicitation — user must choose"| R
+  R -->|"4. fetch"| L1
+  L1 -->|"5. completion"| R
   R --> RM
   RM -->|failure| RE
   RM -->|success| E
-  E -->|5. elicitation| CHOICE
-  CHOICE -->|6a| O1
-  CHOICE -->|6b| O2
-  CHOICE -->|6c| O3
-  O1 -->|7a. approved| A3
-  O2 -->|7b. approved| A3
-  O3 -->|7c. cancelled| A3
+  E -->|"6. elicitation"| CHOICE
+  CHOICE -->|"7a"| O1
+  CHOICE -->|"7b"| O2
+  CHOICE -->|"7c"| O3
+  O1 -->|"8a. approved"| A3
+  O2 -->|"8b. approved"| A3
+  O3 -->|"8c. cancelled"| A3
   RE -->|error| A3
   A3 --> A4
   A4 -->|"approved"| AOK
@@ -345,12 +367,13 @@ flowchart TD
 
 ```
 1. Agent submits a prompt ("thông tin việt nam")
-2. Agent calls the MCP tool → LLM (llama.cpp) rewrites the prompt
-3. MCP server returns the original & the rewritten version (via the elicitation UI)
-4. MCP server shows the 3 choices (1/2/3)
-5. User picks one (1/2/3)
-6. MCP server returns the chosen prompt (or the "cancelled" state)
-7. Agent sends that prompt (or stops if cancelled)
+2. Agent calls the MCP tool → user picks the enrichment level (light/balanced/detailed)
+3. LLM (llama.cpp) rewrites the prompt at that level
+4. MCP server returns the original & the rewritten version (via the elicitation UI)
+5. MCP server shows the 3 choices (1/2/3)
+6. User picks one (1/2/3)
+7. MCP server returns the chosen prompt (or the "cancelled" state)
+8. Agent sends that prompt (or stops if cancelled)
 ```
 
 ### Mandatory Gating (when the agent supports hooks)
@@ -358,7 +381,8 @@ flowchart TD
 An agent hook intercepts the prompt → calls `review_and_select_prompt` → inside the MCP server:
 
 ```
-Rewrite the prompt (llama.cpp)
+User picks the level (light / balanced / detailed)
+    → Rewrite the prompt at that level (llama.cpp)
     → Show the choices (elicitation)
     → User selects & confirms
     → Return the result (or cancel)
@@ -403,7 +427,7 @@ npm run test:coverage
 Test coverage includes:
 
 - Rewrite (success, timeout, malformed, language/context pass-through)
-- Review/select: original, rewritten, cancel, cancellation via action, LLM error (no fallback), elicitation unsupported, invalid selection
+- Review/select: user-chosen level picker (before the rewrite), original, rewritten, cancel, cancellation via action, LLM error (no fallback), elicitation unsupported + text fallback flow (`pending_level_selection` → `pending_user_selection` → approval), invalid selection
 - Capability detection (conservative default, no name-based inference)
 - Concurrent sessions (isolation)
 - Logger (redaction, stderr-only)
@@ -477,15 +501,15 @@ tool-prompt-rewrite-mcp/
 
 ## Troubleshooting
 
-| Symptom                                                     | Cause                                                                 | Fix                                                                                                                                                                                        |
-| ----------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `LLM request timed out`                                     | llama.cpp is slow, the model is too large, or a thinking model on CPU | Increase `PROMPT_GATE_TIMEOUT_MS` (e.g. 300000) and `PROMPT_GATE_LLM_MAX_TOKENS` (e.g. 4096)                                                                                               |
-| `LLM HTTP 401`                                              | Wrong API key                                                         | Check that `PROMPT_GATE_LLM_API_KEY` matches your llama.cpp key                                                                                                                            |
-| `LLM returned an empty completion`                          | The model produced no text (high temperature, small max_tokens)       | Lower `temperature`, increase `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, raise if needed)                                                                                                 |
-| `LLM returned empty content but produced reasoning_content` | A thinking model (qwen3/3.5) is not respecting `thinking:false`       | Use a **non-thinking** model (e.g. `qwen2.5-7b`), or upgrade llama.cpp to a build that supports `thinking:false`, or set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ so the model has enough budget |
-| Client reports `elicitation_unsupported`                    | The agent does not support elicitation                                | Call the `get_client_capabilities` tool first; only use the gate tool when `elicitation_supported: true`                                                                                   |
-| Prompt does not go through the gate when using an agent     | The agent has no hooks (standard mode)                                | This is a limit of standard MCP — see [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-when-the-agent-supports-hooks)                                                           |
-| `node build/index.js` does not run                          | Not built yet                                                         | Run `npm run build` first                                                                                                                                                                  |
+| Symptom                                                     | Cause                                                                 | Fix                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLM request timed out`                                     | llama.cpp is slow, the model is too large, or a thinking model on CPU | Increase `PROMPT_GATE_TIMEOUT_MS` (e.g. 300000) and `PROMPT_GATE_LLM_MAX_TOKENS` (e.g. 4096)                                                                                                                                                                           |
+| `LLM HTTP 401`                                              | Wrong API key                                                         | Check that `PROMPT_GATE_LLM_API_KEY` matches your llama.cpp key                                                                                                                                                                                                        |
+| `LLM returned an empty completion`                          | The model produced no text (high temperature, small max_tokens)       | Lower `temperature`, increase `PROMPT_GATE_LLM_MAX_TOKENS` (default 2048, raise if needed)                                                                                                                                                                             |
+| `LLM returned empty content but produced reasoning_content` | A thinking model (qwen3/3.5) is not respecting `thinking:false`       | Use a **non-thinking** model (e.g. `qwen2.5-7b`), or upgrade llama.cpp to a build that supports `thinking:false`, or set `PROMPT_GATE_LLM_MAX_TOKENS=4096`+ so the model has enough budget                                                                             |
+| Client reports `elicitation_unsupported`                    | The client does not support elicitation                               | Text fallback runs by default: expect `pending_level_selection` / `pending_user_selection` menus and relay the user's choices (`rewrite_level` / `selection`). In strict mode (`PROMPT_GATE_ECHO_FALLBACK=false`) only use the gate when `elicitation_supported: true` |
+| Prompt does not go through the gate when using an agent     | The agent has no hooks (standard mode)                                | This is a limit of standard MCP — see [Mandatory Gating](docs/ARCHITECTURE.md#22-mandatory-gating-when-the-agent-supports-hooks)                                                                                                                                       |
+| `node build/index.js` does not run                          | Not built yet                                                         | Run `npm run build` first                                                                                                                                                                                                                                              |
 
 ## License
 

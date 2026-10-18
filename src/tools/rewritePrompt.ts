@@ -19,17 +19,19 @@ export const RewritePromptInputSchema = z.object({
     .string()
     .min(1)
     .max(32_000)
-    .describe('The original prompt to rewrite. This is the user\'s latest message only.'),
+    .describe("The original prompt to rewrite. This is the user's latest message only."),
   language: z
     .string()
     .max(32)
     .optional()
     .describe(
-      'Output language, e.g. "english" or "vietnamese". ONLY pass this when the ' +
-        'user explicitly asks for a different output language. If the user has not ' +
-        'asked, omit it — the server auto-detects the prompt\'s language and ' +
-        'preserves it. Do NOT pass "english" just to "improve clarity"; that ' +
-        'switches the output language and is a drift.'
+      'Output language of the rewritten prompt, e.g. "vietnamese", "english", ' +
+        '"japanese". ALWAYS pass the language the user wrote their prompt in, so ' +
+        'the rewrite preserves it. If the user explicitly asks for a different ' +
+        'output language (e.g. "answer in English"), pass THAT language instead. ' +
+        'Never switch the language on your own judgment — passing "english" to ' +
+        '"improve clarity" is a drift. Omit only when the language cannot be ' +
+        'determined; the server then auto-detects it.'
     ),
   context: z
     .string()
@@ -70,10 +72,11 @@ export function registerRewritePromptTool(server: McpServer, rewrite: RewriteSer
         '- Choose `rewrite_level` to fit the task: `light` for quick one-shot ' +
         'answers, `balanced` (default) for most coding/research work, ' +
         '`detailed` when the user explicitly wants a fully-specified spec.\n' +
-        '- Pass `language` only when the user wants the rewritten prompt in ' +
-        'a language different from the original. Do NOT switch the language ' +
-        'on your own judgment — the server auto-detects the prompt language ' +
-        'and preserves it by default.',
+        "- ALWAYS pass `language` set to the language of the user's original " +
+        'prompt (e.g. "vietnamese"), so the rewrite stays in that language. If ' +
+        'the user explicitly asks for a different output language, pass that ' +
+        'language instead. Do NOT switch the language on your own judgment — ' +
+        'that is a drift.',
       inputSchema: {
         prompt: RewritePromptInputSchema.shape.prompt,
         language: RewritePromptInputSchema.shape.language,

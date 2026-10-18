@@ -23,12 +23,12 @@ sent to the model — that is the job of `review_and_select_prompt`.
 
 ## Inputs
 
-| Field           | Required | Notes                                                                                                                                                                                                                                                                                 |
-| --------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prompt`        | yes      | The user's **latest message only**, not the whole session.                                                                                                                                                                                                                            |
-| `context`       | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                                                         |
-| `language`      | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language (e.g. "rewrite in English"). Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
-| `rewrite_level` | no       | `light` (minimal), `balanced` (default), `detailed` (full spec).                                                                                                                                                                                                                      |
+| Field           | Required | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt`        | yes      | The user's **latest message only**, not the whole session.                                                                                                                                                                                                                                                                                                                                                                                                |
+| `context`       | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                                                                                                                                                                                                                             |
+| `language`      | yes*     | **Always pass the language the user wrote their prompt in** (e.g. `"vietnamese"`, `"japanese"`), so the rewrite stays in that language. Only deviate when the user explicitly asks for a different output language (e.g. "rewrite in English") — then pass that language instead. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. Omit only if the language cannot be determined; the server then auto-detects it. |
+| `rewrite_level` | no       | `light` (minimal), `balanced` (default), `detailed` (full spec).                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## Choosing `rewrite_level`
 
@@ -39,14 +39,19 @@ sent to the model — that is the job of `review_and_select_prompt`.
 
 ## Language rule (do not drift)
 
-The server **auto-detects the prompt's language** and preserves it by default.
+**Always pass `language` set to the language the user wrote their prompt in**
+(e.g. `"vietnamese"`, `"japanese"`, `"english"`). The rewrite then stays in
+that language.
 
-- **Do not pass `language`** unless the user _explicitly_ asks for a different
-  output language (e.g. "viết lại bằng tiếng Anh" / "rewrite this in English").
+- If the user _explicitly_ asks for a different output language (e.g.
+  "viết lại bằng tiếng Anh" / "rewrite this in English"), pass **that**
+  language instead.
 - A Vietnamese prompt stays Vietnamese; a Japanese prompt stays Japanese.
 - Passing `language: "english"` because "English is clearer" is a **drift**,
   not an improvement. It overrides the user's language and breaks the
   "preserve the user's language" rule.
+- If you cannot determine the language, omit the field — the server
+  auto-detects and preserves it.
 
 ## How to call
 
@@ -58,6 +63,7 @@ The MCP server exposes the tool as `rewrite_prompt`. A correct call looks like:
   "input": {
     "prompt": "fix the login bug",
     "context": "User reported the login page throws 500 after entering valid credentials. Working on src/auth/login.ts. Decided to move token validation into a middleware.",
+    "language": "english",
     "rewrite_level": "balanced"
   }
 }

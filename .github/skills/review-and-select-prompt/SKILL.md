@@ -24,30 +24,39 @@ use the `rewrite-prompt` skill instead.
 
 ## Inputs
 
-| Field              | Required | Notes                                                                                                                                                                                                                                                     |
-| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prompt`           | yes      | The user's **latest message only**, not the whole session.                                                                                                                                                                                                |
-| `context`          | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                             |
-| `language`         | no       | **Omit by default.** The server auto-detects the prompt's language and preserves it. Only pass this when the user explicitly asks for a different output language. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. |
-| `rewrite_level`    | no       | `light` / `balanced` (default) / `detailed`.                                                                                                                                                                                                              |
-| `selection`        | no       | **Second call only** (after `pending_user_selection`): the user's choice — `"original"` / `"rewritten"` / `"cancel"`. Never auto-select; pass it only after the user has answered.                                                                        |
-| `rewritten_prompt` | no       | **Second call only:** the exact rewritten text the user saw, so the user approves exactly what they read.                                                                                                                                                 |
+| Field              | Required | Notes                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt`           | yes      | The user's **latest message only**, not the whole session.                                                                                                                                                                                                                                                                                                                                                                    |
+| `context`          | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                                                                                                                                                                                                 |
+| `language`         | yes*     | **Always pass the language the user wrote their prompt in** (e.g. `"vietnamese"`, `"japanese"`), so the rewrite stays in that language. Only deviate when the user explicitly asks for a different output language — then pass that language instead. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. Omit only if the language cannot be determined; the server then auto-detects it. |
+| `rewrite_level`    | no       | **Chosen by the USER, not you.** Do NOT pass it on the first call — the tool shows the user a picker with `light` / `balanced` / `detailed` (or, for clients without elicitation, returns `pending_level_selection` with a text menu). Only pass it to relay the user's explicit choice after `pending_level_selection`.                                                                                                      |
+| `selection`        | no       | **After `pending_user_selection` only:** the user's choice — `"original"` / `"rewritten"` / `"cancel"`. Never auto-select; pass it only after the user has answered.                                                                                                                                                                                                                                                          |
+| `rewritten_prompt` | no       | **Along with `selection`:** the exact rewritten text the user saw, so the user approves exactly what they read.                                                                                                                                                                                                                                                                                                               |
 
 ## How it behaves
 
-1. The tool rewrites the prompt (context enrichment only — no new intent).
-2. It shows the user **both** the original and the rewritten version:
+1. The tool first asks **the user** to choose the rewrite level
+   (`light` / `balanced` / `detailed`):
+   - If the client supports elicitation: an interactive picker. The agent
+     must not choose the level.
+   - If the client does NOT: a `pending_level_selection` result with the
+     three numbered levels in plain text. Ask the user, then re-call with
+     the same inputs plus `rewrite_level` set to their choice. Never pick
+     for them.
+2. The tool rewrites the prompt at that level (context enrichment only —
+   no new intent).
+3. It shows the user **both** the original and the rewritten version:
    - If the client supports elicitation: an interactive picker (3 options).
    - If the client does NOT: a `pending_user_selection` result with both
      versions in plain text and the three numbered choices.
-3. The user chooses one of three:
+4. The user chooses one of three:
    - **`original`** → the original prompt is the approved result.
    - **`rewritten`** → the rewritten prompt is the approved result.
    - **`cancel`** → nothing is approved.
-4. The tool returns the approved prompt — or a distinct cancellation outcome.
-   When the text fallback was used, step 4 happens on a **second call**
+5. The tool returns the approved prompt — or a distinct cancellation outcome.
+   When the text fallback was used, step 5 happens on a **later call**
    where you pass `selection` (plus `rewritten_prompt` if that is what was
-   chosen). The second call does not re-run the LLM.
+   chosen). That call does not re-run the LLM.
 
 ## Expected results
 
@@ -73,12 +82,36 @@ use the `rewrite-prompt` skill instead.
 }
 ```
 
-**Pending user selection (client has no elicitation — text fallback):**
+**Pending level selection (client has no elicitation — text fallback, first step):**
 
 When the client does not support MCP elicitation, the first call returns a
-distinct outcome that shows both versions in plain text with the three
-numbered choices, and instructs you to re-call this tool with the user's
-choice:
+distinct outcome asking the user to choose the rewrite level. **No rewrite
+has happened yet** (the LLM is not called):
+
+```json
+{
+  "status": "pending_level_selection",
+  "available_levels": ["light", "balanced", "detailed"]
+}
+```
+
+Ask the user which level to use, then re-call with the same inputs plus
+`rewrite_level` set to their choice:
+
+```json
+{
+  "prompt": "...(same)",
+  "context": "...(same)",
+  "language": "...(same)",
+  "rewrite_level": "balanced"
+}
+```
+
+**Pending user selection (client has no elicitation — text fallback, second step):**
+
+After the rewrite, the tool returns a distinct outcome that shows both
+versions in plain text with the three numbered choices, and instructs you
+to re-call this tool with the user's choice:
 
 ```json
 {
@@ -89,13 +122,14 @@ choice:
 }
 ```
 
-On the second call, pass `selection` (and `rewritten_prompt` if the user
-chose the rewritten version) — the second call does NOT re-run the LLM:
+On the next call, pass `selection` (and `rewritten_prompt` if the user
+chose the rewritten version) — that call does NOT re-run the LLM:
 
 ```json
 {
   "prompt": "...(same)",
   "context": "...(same)",
+  "language": "...(same)",
   "selection": "rewritten",
   "rewritten_prompt": "...(the text the user saw)"
 }
@@ -106,23 +140,30 @@ outcome; never a silent fallback to the original.
 
 ## Hard rules (do not violate)
 
+- **The user chooses the level.** Never pass `rewrite_level` on the first
+  call and never pick a level "on the user's behalf". With elicitation the
+  picker enforces this; with the text fallback you must relay the user's
+  explicit answer.
 - **Cancel is a distinct outcome.** When the user cancels, `selected_prompt`
   is `null` and **no** approved prompt is exposed. Do not forward anything.
 - **No silent fallback.** If the rewrite fails (timeout, HTTP error, empty
   completion), the tool returns an error — it never auto-selects the original.
 - **No auto-select on timeout.** The user must choose; nothing is selected for
   them.
-- **Elicitation must be supported.** If the client does not support MCP
-  elicitation, the call returns a clear compatibility error. Check with
-  `get_client_capabilities` first if in doubt.
+- **Elicitation is optional (text fallback exists).** If the client does not
+  support MCP elicitation, the tool returns `pending_level_selection` /
+  `pending_user_selection` text menus by default. In strict mode
+  (`PROMPT_GATE_ECHO_FALLBACK=false`) it returns a compatibility error
+  instead. Check with `get_client_capabilities` if in doubt.
 
 ## Before calling: check capabilities
 
 Optionally (recommended when the client is unknown), call
-`get_client_capabilities` and confirm `elicitation_supported: true` before
-calling the gate. If it is `false`, the gate tool will fail with a
-compatibility error — prefer `rewrite_prompt` or surface the limitation to the
-user.
+`get_client_capabilities` and check `elicitation_supported`. If it is
+`false`, the gate still works in text-fallback mode by default — expect
+`pending_level_selection` / `pending_user_selection` text menus and relay
+the user's answers. In strict mode the gate fails with a compatibility
+error — prefer `rewrite_prompt` or surface the limitation to the user.
 
 ## Related
 

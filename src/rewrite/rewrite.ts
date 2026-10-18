@@ -17,6 +17,12 @@ import type { RewriteLevel, RewriteResult } from '../types.js';
 
 export interface RewriteOptions {
   level?: RewriteLevel;
+  /**
+   * Target output language for the rewrite (e.g. "vietnamese"), normally
+   * passed by the agent based on the language of the user's prompt (or an
+   * explicit user request to switch languages). When absent, the prompt's
+   * language is auto-detected and preserved.
+   */
   language?: string;
   context?: string;
   /**
@@ -116,11 +122,7 @@ export class RewriteService {
       }
       meta = readFileSync(policyFile, 'utf8').trim();
       if (meta.length === 0) {
-        throw new LLMError(
-          `Rewrite policy file is empty: ${policyFile}`,
-          new Error('policy file empty'),
-          0
-        );
+        throw new LLMError(`Rewrite policy file is empty: ${policyFile}`, new Error('policy file empty'), 0);
       }
     } else {
       meta = buildMetaPrompt(level);
@@ -198,8 +200,7 @@ function buildUserMessage(prompt: string, opts: RewriteOptions): string {
     parts.push(`Preferred output language: ${explicitLanguage}`);
   } else {
     const detected = detectLanguage(prompt);
-    const hint =
-      detected === 'unknown' ? 'the original language of the prompt' : languageHint(detected);
+    const hint = detected === 'unknown' ? 'the original language of the prompt' : languageHint(detected);
     parts.push('');
     parts.push(`Output language: keep ${hint}. Do not switch to another language.`);
   }

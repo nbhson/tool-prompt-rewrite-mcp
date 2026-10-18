@@ -19,20 +19,30 @@ export interface ElicitationOption {
 
 export type ElicitationResult = { action: 'accept'; chosen: string } | { action: 'cancel' };
 
+/** Which user decision an elicitation is asking for. */
+export type ElicitStep = 'level' | 'selection';
+
 /**
- * Ask the user to choose among 3 options (original / rewritten / cancel)
- * using MCP form elicitation.
+ * One elicitation call made by the gate tool. Passed to the (injectable)
+ * elicit function so tests can stub the user's answer per step.
+ */
+export interface ElicitCall {
+  step: ElicitStep;
+  message: string;
+  options: ElicitationOption[];
+  requestId: string;
+}
+
+/**
+ * Ask the user to choose among the given options (e.g. rewrite level, or
+ * original / rewritten / cancel) using MCP form elicitation.
  *
  * The schema deliberately uses an `enum` so the client can render a
  * picker; the `selected` field is required so a blank selection is
  * impossible at the schema level.
  */
-export async function elicitPromptChoice(
-  server: McpServer,
-  message: string,
-  options: ElicitationOption[],
-  requestId: string
-): Promise<ElicitationResult> {
+export async function elicitChoice(server: McpServer, call: ElicitCall): Promise<ElicitationResult> {
+  const { message, options, requestId } = call;
   const enumValues = options.map((o) => o.value);
 
   let result;

@@ -7,37 +7,61 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const quiet = createLogger('error');
 
+type GateResponse = Awaited<ReturnType<typeof handleReviewAndSelect>>;
+/** First text block of a gate response (optional-safe for strict TS). */
+const textOf = (res: GateResponse): string => res.content[0]?.text ?? '';
+
+/** Step-aware stub: level picker accepts "balanced"; selection returns `selection`. */
+const levelThen =
+  (selection: 'original' | 'rewritten' | 'cancel'): NonNullable<ReviewDeps['elicit']> =>
+  async (call) =>
+    call.step === 'level'
+      ? { action: 'accept', chosen: 'balanced' }
+      : { action: 'accept', chosen: selection };
+
 function depsWithReply(reply: string, elicit?: ReviewDeps['elicit']): ReviewDeps {
   const server = new McpServer({ name: 't', version: '0.0.1' }, { capabilities: { tools: {} } });
-  return { server, rewrite: new RewriteService(new MockProvider({ kind: 'ok', reply })), log: quiet, elicit };
+  return {
+    server,
+    rewrite: new RewriteService(new MockProvider({ kind: 'ok', reply })),
+    log: quiet,
+    elicit: elicit ?? levelThen('rewritten'),
+  };
 }
 
 describe('Cancellation & fallback guarantees', () => {
   it('cancellation NEVER exposes selected_prompt (distinct outcome)', async () => {
-    const deps = depsWithReply('Enriched', async () => ({ action: 'cancel' }));
+    const deps = depsWithReply('Enriched', async (call) =>
+      call.step === 'level' ? { action: 'accept', chosen: 'balanced' } : { action: 'cancel' }
+    );
     const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'test session' });
     expect(res.structuredContent?.status).toBe('cancelled');
     expect(res.structuredContent?.selected_prompt).toBeNull();
     // The text also makes it explicit.
-    expect(res.content[0].text).toMatch(/cancelled/i);
+    expect(textOf(res)).toMatch(/cancelled/i);
   });
 
   it('LLM error NEVER silently falls back to original', async () => {
     // Simulate LLM failure (network error).
     const failing = new MockProvider({ kind: 'throw', error: 'ECONNREFUSED' });
     const server = new McpServer({ name: 't', version: '0.0.1' }, { capabilities: { tools: {} } });
-    const deps: ReviewDeps = { server, rewrite: new RewriteService(failing), log: quiet };
+    const deps: ReviewDeps = {
+      server,
+      rewrite: new RewriteService(failing),
+      log: quiet,
+      elicit: levelThen('rewritten'),
+    };
     const res = await handleReviewAndSelect(deps, { prompt: 'original-prompt', context: 'test session' });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.status).toBe('error');
     expect(res.structuredContent?.selected_prompt).toBeNull();
     // The text should not claim the original was approved.
-    expect(res.content[0].text).not.toMatch(/approved/i);
+    expect(textOf(res)).not.toMatch(/approved/i);
   });
 
   it('no auto-select after timeout — timeout is a hard error, not a default choice', async () => {
     const deps = depsWithReply('ok', async () => {
-      // Simulate timeout / abort before user chose.
+      // Simulate timeout / abort while the user was choosing.
       throw new Error('aborted');
     });
     const res = await handleReviewAndSelect(deps, { prompt: 'p', context: 'test session' });

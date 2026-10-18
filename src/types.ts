@@ -23,8 +23,8 @@ export interface RewriteResult {
 /**
  * Output of `review_and_select_prompt` after user interaction.
  *
- * Exactly one of `status: 'approved'`, `status: 'cancelled'`, or
- * `status: 'pending_user_selection'`.
+ * Exactly one of `status: 'approved'`, `status: 'cancelled'`,
+ * `status: 'pending_level_selection'`, or `status: 'pending_user_selection'`.
  * Cancellation MUST NOT expose `selectedPrompt`.
  */
 export type ReviewResult =
@@ -39,6 +39,18 @@ export type ReviewResult =
       status: 'cancelled';
       selectedOption: 'cancel';
       selectedPrompt: null;
+    }
+  | {
+      /**
+       * The USER must choose the rewrite level first. Returned only when the
+       * client does not support MCP elicitation and the text fallback (echo
+       * fallback) is enabled. The prompt has NOT been rewritten yet; the
+       * agent must re-call the tool with `rewrite_level` after the user picks.
+       * The agent must never choose the level for the user.
+       */
+      status: 'pending_level_selection';
+      /** The three valid values the agent may pass on the next call. */
+      availableLevels: RewriteLevel[];
     }
   | {
       /**

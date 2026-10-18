@@ -10,18 +10,14 @@
  *
  * We intentionally keep this conservative:
  * - Only emit a language when we have at least one strong signal.
- * - Vietnamese is detected by the presence of Latin letters with
- *   diacritics (à, á, ă, â, e, ê, i, o, ô, u, ư, plus tone marks).
+ * - Vietnamese is detected by (a) Latin letters with diacritics
+ *   (à, á, ă, â, e, ê, i, o, ô, u, ư, plus tone marks), or (b) a curated list
+ *   of unaccented function words ("khong", "duoc", "giup", ...) for users who
+ *   type without tone marks / on an ASCII keyboard.
  * - CJK is detected by character ranges, not by word lists.
  */
 
-export type DetectedLanguage =
-  | 'vietnamese'
-  | 'english'
-  | 'japanese'
-  | 'chinese'
-  | 'korean'
-  | 'unknown';
+export type DetectedLanguage = 'vietnamese' | 'english' | 'japanese' | 'chinese' | 'korean' | 'unknown';
 
 interface LanguageSpec {
   id: DetectedLanguage;
@@ -35,8 +31,7 @@ interface LanguageSpec {
 // We intentionally EXCLUDE plain 'u', 'a', 'e', 'i', 'o' (too ambiguous with
 // English) and keep only letters that are unambiguously Vietnamese diacritics
 // (e.g. ư, ơ, ă, â, ơ, ơ, à, á, ả, ã, ă, ẹ, ế, ...).
-const VIET_SIGNAL =
-  /[àáạảãâầấẩẫăằắẳẵơờớởỡưừứửữựệếềểễỉíịọỏợỗởốộỳýỷýùú]/g;
+const VIET_SIGNAL = /[àáạảãâầấẩẫăằắẳẵơờớởỡưừứửữựệếềểễỉíịọỏợỗởốộỳýỷýùú]/g;
 // Japanese: Hiragana / Katakana (Kanji excluded so we don't collide with
 // Chinese detection below; we rely on kana presence to label Japanese text).
 const JAP_SIGNAL = /[\u3040-\u30ff]/g;
@@ -46,13 +41,23 @@ const CHINESE_SIGNAL = /[\u4e00-\u9fff]/g;
 const KOREAN_SIGNAL = /[\uac00-\ud7af]/g;
 // English: common function words (word-bounded to avoid matching inside
 // CJK / Vietnamese tokens).
-const ENGLISH_SIGNAL = /\b(about|after|and|any|are|because|before|but|can|did|for|from|get|has|have|how|is|it|its|like|make|most|need|only|other|over|should|some|than|that|the|this|time|under|very|when|what|will|with|you|your)\b/g;
+const ENGLISH_SIGNAL =
+  /\b(about|after|and|any|are|because|before|but|can|did|for|from|get|has|have|how|is|it|its|like|make|most|need|only|other|over|should|some|than|that|the|this|time|under|very|when|what|will|with|you|your)\b/g;
+// Vietnamese typed WITHOUT diacritics (fast typing / ASCII keyboard), e.g.
+// "sua loi dang nhap giup toi". Curated function words: common English words
+// ("the", "can", "do", "an", "ban", ...) are intentionally EXCLUDED, and two
+// hits are required, so a single borrowed word ("tin", "mot", "rat") cannot
+// flip an English prompt to Vietnamese.
+const VIET_WORDS_SIGNAL =
+  /\b(khong|duoc|nhung|nguoi|cua|cho|trong|khi|nay|thi|neu|rat|voi|toi|cac|mot|hai|giup|viet|sua|xem|tim|lam|giai|thich|cach|hoat|tat|hom|tuc|tin|thong|nam|tam|sau|truoc|len|xuong|vao|hoc|ngu|uong|chao|xin|thay|biet|muon|loi|nhap|huong|noi|nhu|theo|dang|sao|nao|minh|chung|cung)\b/g;
 
 // Order matters: Vietnamese diacritics are checked FIRST because they are
 // the strongest, unambiguous signal. Kana is checked before Han so Japanese
 // text is labelled Japanese, not Chinese.
 const SPECS: LanguageSpec[] = [
   { id: 'vietnamese', signal: VIET_SIGNAL, minMatches: 2 },
+  // Same language, second signal: Vietnamese typed without diacritics.
+  { id: 'vietnamese', signal: VIET_WORDS_SIGNAL, minMatches: 2 },
   { id: 'japanese', signal: JAP_SIGNAL, minMatches: 2 },
   { id: 'korean', signal: KOREAN_SIGNAL, minMatches: 2 },
   { id: 'chinese', signal: CHINESE_SIGNAL, minMatches: 2 },
@@ -76,9 +81,9 @@ export function detectLanguage(prompt: string): DetectedLanguage {
   }
 
   // 2. English: word-based. Only treat as English when there is NO CJK /
-  //    Hangul / Vietnamese-diacritic signal at all AND we have enough plain
-  //    Latin words (function words or total word count >= 4). This keeps a
-  //    short "abc def" from being mislabelled English.
+  //    Hangul / Vietnamese (diacritic or unaccented-word) signal at all AND we
+  //    have enough plain Latin words (function words or total word count
+  //    >= 3). This keeps a short "abc def" from being mislabelled English.
   const hasForeignChars =
     // eslint-disable-next-line no-misleading-character-class -- combined diacritic ranges are intentional
     /[\u00E0-\u016F\u02C6-\u02CF\u0300-\u036F]/.test(text) || // Vietnamese diacritics

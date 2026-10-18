@@ -10,13 +10,15 @@
  *   node scripts/mcp-e2e.mjs [rewrite|gate|caps|caps-decl|echo]
  *
  *   rewrite - just test rewrite_prompt (no user interaction needed)
- *   gate    - test review_and_select_prompt; auto-answers elicitation
- *             with "rewritten" so the flow runs unattended
+ *   gate    - test review_and_select_prompt; auto-answers the level picker
+ *             with "balanced" and the selection picker with "rewritten"
  *   caps    - declare NO elicitation; get_client_capabilities must say false
  *   caps-decl - declare elicitation; get_client_capabilities must say true
  *   echo    - client declares NO elicitation; the gate tool returns
- *             pending_user_selection (text fallback) and a re-call with
- *             selection="rewritten" completes the gate without the LLM
+ *             pending_level_selection first (text fallback), then a re-call
+ *             with rewrite_level="light" returns pending_user_selection,
+ *             and a final call with selection="rewritten" completes the
+ *             gate without another LLM call
  */
 
 import { spawn } from 'node:child_process';
@@ -67,14 +69,21 @@ child.stdout.on('data', (chunk) => {
       continue;
     }
 
-    // Server->client request (elicitation). Auto-accept "rewritten".
+    // Server->client request (elicitation). Auto-answer: the level picker
+    // gets "balanced", the selection picker gets "rewritten".
     if (msg.id !== undefined && msg.method) {
       console.error(`[server->client] ${msg.method}`);
       const content = {};
       if (msg.params?.requestedSchema?.properties?.selected) {
         const enumVals = msg.params.requestedSchema.properties.selected.enum ?? [];
-        // Prefer rewritten if present, else the first option.
-        content.selected = enumVals.includes('rewritten') ? 'rewritten' : enumVals[0];
+        // Prefer rewritten (selection picker), then balanced (level picker),
+        // else the first option.
+        content.selected = enumVals.includes('rewritten')
+          ? 'rewritten'
+          : enumVals.includes('balanced')
+            ? 'balanced'
+            : enumVals[0];
+        console.error(`[server->client] auto-answer: ${content.selected}`);
       }
       child.stdin.write(
         JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { action: 'accept', content } }) + '\n'
@@ -146,12 +155,13 @@ try {
     console.log('WARNINGS:', r.structuredContent?.warnings ?? '(none)');
   } else if (mode === 'echo') {
     // Client declares NO elicitation -> the gate tool must return
-    // pending_user_selection (the text fallback), NOT an error.
+    // pending_level_selection first (the text fallback), NOT an error, and
+    // WITHOUT calling the LLM yet. The USER must choose the level.
     const r = await rpc('tools/call', {
       name: 'review_and_select_prompt',
-      arguments: { prompt: 'thông tin việt nam', rewrite_level: 'light', context: 'e2e echo test' },
+      arguments: { prompt: 'thông tin việt nam', context: 'e2e echo test' },
     });
-    console.log(`\n=== [${secs()}s] review_and_select_prompt (no elicitation, echo fallback) ===`);
+    console.log(`\n=== [${secs()}s] call 1: no elicitation, no level -> level menu expected ===`);
     if (r.isError) {
       console.error('ERROR:', r.structuredContent?.message ?? r.content?.[0]?.text);
       child.kill();
@@ -159,52 +169,80 @@ try {
     }
     const sc = r.structuredContent;
     console.log('STATUS:', sc?.status);
-    if (sc?.status !== 'pending_user_selection') {
-      console.error(`FAIL: expected pending_user_selection, got ${sc?.status}`);
+    if (sc?.status !== 'pending_level_selection') {
+      console.error(`FAIL: expected pending_level_selection, got ${sc?.status}`);
       child.kill();
       process.exit(1);
     }
-    console.log('ORIGINAL:', sc?.original_prompt);
-    console.log('REWRITTEN:', sc?.rewritten_prompt);
-    console.log('MENU:', sc?.available_selections?.join(', '));
+    console.log('LEVELS:', sc?.available_levels?.join(', '));
     console.log('\n--- text menu shown to the agent ---');
     console.log(r.content?.[0]?.text);
 
-    // Simulate the user picking "rewritten": the agent re-calls with the
-    // user's selection. This must NOT call the LLM again.
+    // Simulate the user picking "light": the agent re-calls with the SAME
+    // inputs plus the relayed level. Now the rewrite runs and the selection
+    // menu is returned.
     const r2 = await rpc('tools/call', {
       name: 'review_and_select_prompt',
       arguments: {
         prompt: 'thông tin việt nam',
         rewrite_level: 'light',
         context: 'e2e echo test',
-        selection: 'rewritten',
-        rewritten_prompt: sc?.rewritten_prompt,
       },
     });
-    console.log(`\n=== [${secs()}s] re-call with selection=rewritten ===`);
+    console.log(`\n=== [${secs()}s] call 2: rewrite_level=light -> selection menu expected ===`);
     if (r2.isError) {
       console.error('ERROR:', r2.structuredContent?.message ?? r2.content?.[0]?.text);
       child.kill();
       process.exit(1);
     }
-    console.log('STATUS:', r2.structuredContent?.status);
-    console.log('SELECTED:', r2.structuredContent?.selected_option);
-    console.log('PROMPT:', r2.structuredContent?.selected_prompt);
+    const sc2 = r2.structuredContent;
+    console.log('STATUS:', sc2?.status);
+    if (sc2?.status !== 'pending_user_selection') {
+      console.error(`FAIL: expected pending_user_selection, got ${sc2?.status}`);
+      child.kill();
+      process.exit(1);
+    }
+    console.log('ORIGINAL:', sc2?.original_prompt);
+    console.log('REWRITTEN:', sc2?.rewritten_prompt);
+    console.log('MENU:', sc2?.available_selections?.join(', '));
+
+    // Simulate the user picking "rewritten": the agent re-calls with the
+    // user's selection. This must NOT call the LLM again.
+    const r3 = await rpc('tools/call', {
+      name: 'review_and_select_prompt',
+      arguments: {
+        prompt: 'thông tin việt nam',
+        rewrite_level: 'light',
+        context: 'e2e echo test',
+        selection: 'rewritten',
+        rewritten_prompt: sc2?.rewritten_prompt,
+      },
+    });
+    console.log(`\n=== [${secs()}s] call 3: re-call with selection=rewritten ===`);
+    if (r3.isError) {
+      console.error('ERROR:', r3.structuredContent?.message ?? r3.content?.[0]?.text);
+      child.kill();
+      process.exit(1);
+    }
+    console.log('STATUS:', r3.structuredContent?.status);
+    console.log('SELECTED:', r3.structuredContent?.selected_option);
+    console.log('PROMPT:', r3.structuredContent?.selected_prompt);
     if (
-      r2.structuredContent?.status !== 'approved' ||
-      r2.structuredContent?.selected_option !== 'rewritten'
+      r3.structuredContent?.status !== 'approved' ||
+      r3.structuredContent?.selected_option !== 'rewritten'
     ) {
-      console.error('FAIL: expected approved/rewritten on re-call');
+      console.error('FAIL: expected approved/rewritten on the final call');
       child.kill();
       process.exit(1);
     }
   } else {
     const r = await rpc('tools/call', {
       name: 'review_and_select_prompt',
-      arguments: { prompt: 'thông tin việt nam', rewrite_level: 'light' },
+      arguments: { prompt: 'thông tin việt nam', context: 'e2e gate test' },
     });
-    console.log(`\n=== [${secs()}s] review_and_select_prompt (auto-chose: rewritten) ===`);
+    console.log(
+      `\n=== [${secs()}s] review_and_select_prompt (auto-answered: level=balanced, selection=rewritten) ===`
+    );
     if (r.isError) {
       console.error('ERROR:', r.structuredContent?.message ?? r.content?.[0]?.text);
       child.kill();

@@ -17,10 +17,12 @@ flowchart TD
   subgraph MCP["🛡️ Universal Prompt Gate MCP Server (stdio)"]
     T["Tool: <b>review_and_select_prompt</b><br/>(registerTool)"]:::mcp
     V["Validate input<br/>(Zod, giới hạn độ dài)"]:::mcp
-    R["Gọi LLM để rewrite<br/>(RewriteService)"]:::mcp
+    LPE["Hiển thị màn chọn LEVEL<br/>light / balanced / detailed<br/>qua MCP elicitation"]:::mcp
+    R["Gọi LLM để rewrite<br/>theo level user đã chọn<br/>(RewriteService)"]:::mcp
     RM{"LLM<br/>ok?"}:::mcp
     RE["Trả về <b>error outcome</b><br/>(<b>không</b> silent fallback)"]:::mcp
     E["Hiển thị ORIGINAL &amp; REWRITTEN<br/>qua MCP elicitation"]:::mcp
+    U0(["👤 USER chọn LEVEL<br/>(bắt buộc)"]):::user
     U2(["👤 USER chọn 1 trong 3"]):::user
     CHOICE{"Lựa chọn"}:::mcp
     O1["Use original<br/>(chọn prompt gốc)"]:::mcp
@@ -36,21 +38,23 @@ flowchart TD
   U -->|1. submit prompt| A1
   A1 -->|2. MCP tool call| T
   T --> V
-  V -->|prompt hợp lệ| R
-  R -->|3. HTTP fetch system + user msg| L1
-  L1 -->|4. completion| R
+  V -->|prompt hợp lệ| LPE
+  LPE -->|"3. elicitation: chọn level"| U0
+  U0 -->|"4. chọn light / balanced / detailed"| R
+  R -->|5. HTTP fetch system + user msg| L1
+  L1 -->|6. completion| R
   R --> RM
   RM -->|thất bại: timeout / HTTP / empty| RE
   RM -->|thành công| E
-  E -->|5. elicitation request| U2
-  U2 -->|6. chọn 1 trong 3| CHOICE
-  CHOICE -->|7a| O1
-  CHOICE -->|7b| O2
-  CHOICE -->|7c| O3
+  E -->|"7. elicitation: chọn bản dùng"| U2
+  U2 -->|8. chọn 1 trong 3| CHOICE
+  CHOICE -->|9a| O1
+  CHOICE -->|9b| O2
+  CHOICE -->|9c| O3
 
-  O1 -->|8a. <b>approved</b>: original<br/>status=approved<br/>selected_prompt=original| A3
-  O2 -->|8b. <b>approved</b>: rewritten<br/>status=approved<br/>selected_prompt=rewritten| A3
-  O3 -->|8c. <b>cancelled</b><br/>selected_prompt=null| A3
+  O1 -->|10a. <b>approved</b>: original<br/>status=approved<br/>selected_prompt=original| A3
+  O2 -->|10b. <b>approved</b>: rewritten<br/>status=approved<br/>selected_prompt=rewritten| A3
+  O3 -->|10c. <b>cancelled</b><br/>selected_prompt=null| A3
   RE -->|error: không có selected_prompt| A3
 
   A3 --> A4

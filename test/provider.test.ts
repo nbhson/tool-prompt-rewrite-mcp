@@ -4,6 +4,7 @@ import type { LLMConfig } from '../src/config.js';
 
 function baseCfg(overrides: Partial<LLMConfig> = {}): LLMConfig {
   return {
+    provider: 'openai-compatible',
     baseUrl: 'http://fake/v1',
     model: 'test',
     apiKey: 'k',

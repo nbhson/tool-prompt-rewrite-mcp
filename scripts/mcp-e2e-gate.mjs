@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * E2E test: verify that the gate tool shows the 3-option picker
+ * E2E test: verify that the gate tool shows the pickers
  * when the client declares the elicitation capability.
  *
  * Usage:
@@ -12,8 +12,9 @@
  *      — exactly what VS Code does in mcpServerRequestHandler.ts.
  *   3. Calls `get_client_capabilities` and prints the result.
  *   4. Calls `review_and_select_prompt` with a tiny prompt + context.
- *   5. When the server sends an `elicitation/create` request, auto-accepts
- *      with `selected: "rewritten"` and prints the final result.
+ *   5. When the server sends an `elicitation/create` request, auto-answers:
+ *      the LEVEL picker gets "balanced", the SELECTION picker gets
+ *      "rewritten", then prints the final result.
  *
  * If your llama.cpp is not running, the LLM step will fail — that's fine,
  * the point of this script is to prove the elicitation round-trip works.
@@ -63,11 +64,20 @@ rl.on('line', (line) => {
   if (msg.method === 'elicitation/create') {
     console.log('\n[elicitation request from server]');
     console.log(JSON.stringify(msg.params, null, 2));
-    // Auto-accept with "rewritten" to prove the round-trip.
+    // Auto-answer to prove the round-trip: the level picker (light/balanced/
+    // detailed) gets "balanced"; the selection picker (original/rewritten/
+    // cancel) gets "rewritten".
+    const enumVals = msg.params?.requestedSchema?.properties?.selected?.enum ?? [];
+    const chosen = enumVals.includes('rewritten')
+      ? 'rewritten'
+      : enumVals.includes('balanced')
+        ? 'balanced'
+        : enumVals[0];
+    console.log(`[auto-answer] selected: ${chosen}`);
     const resp = {
       jsonrpc: '2.0',
       id: msg.id,
-      result: { action: 'accept', content: { selected: 'rewritten' } },
+      result: { action: 'accept', content: { selected: chosen } },
     };
     child.stdin.write(JSON.stringify(resp) + '\n');
     return;
@@ -107,14 +117,14 @@ async function main() {
   }
   console.log('PASS: server sees elicitation as supported.');
 
-  // 3. gate tool (this is where the picker would appear in VS Code)
+  // 3. gate tool (this is where the pickers would appear in VS Code: first
+  // the level picker, then the original/rewritten/cancel picker)
   const t0 = Date.now();
   const result = await send('tools/call', {
     name: 'review_and_select_prompt',
     arguments: {
       prompt: 'thông tin việt nam',
       context: 'e2e gate test session',
-      rewrite_level: 'light',
     },
   });
   console.log(`\n[review_and_select_prompt] in ${((Date.now() - t0) / 1000).toFixed(1)}s`);

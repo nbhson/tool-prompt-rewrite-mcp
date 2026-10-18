@@ -8,6 +8,12 @@ describe('detectLanguage', () => {
     expect(detectLanguage('hướng dẫn viết test unit')).toBe('vietnamese');
   });
 
+  it('detects Vietnamese prompts written without diacritics (word signal)', () => {
+    expect(detectLanguage('thong tin viet nam')).toBe('vietnamese');
+    expect(detectLanguage('sua loi dang nhap giup toi')).toBe('vietnamese');
+    expect(detectLanguage('tom tat tin tuc hom nay')).toBe('vietnamese');
+  });
+
   it('detects English prompts (word-count / function-word signal)', () => {
     expect(detectLanguage('fix the login bug in src/auth/login.ts')).toBe('english');
     expect(detectLanguage('please help me understand memoization')).toBe('english');
@@ -35,6 +41,8 @@ describe('detectLanguage', () => {
   it('requires min matches to avoid false positives', () => {
     // One Vietnamese diacritic is not enough.
     expect(detectLanguage('ab ca')).toBe('unknown');
+    // A single borrowed word ("tin") is not enough to call it Vietnamese.
+    expect(detectLanguage('how to remove rust from a tin can')).toBe('english');
   });
 });
 

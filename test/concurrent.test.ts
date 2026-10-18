@@ -22,13 +22,19 @@ describe('Concurrent independent sessions', () => {
       server: s1,
       rewrite: r1,
       log: quiet,
-      elicit: async () => ({ action: 'accept', chosen: 'rewritten' }),
+      elicit: async (call) =>
+        call.step === 'level'
+          ? { action: 'accept', chosen: 'balanced' }
+          : { action: 'accept', chosen: 'rewritten' },
     };
     const d2: ReviewDeps = {
       server: s2,
       rewrite: r2,
       log: quiet,
-      elicit: async () => ({ action: 'accept', chosen: 'original' }),
+      elicit: async (call) =>
+        call.step === 'level'
+          ? { action: 'accept', chosen: 'light' }
+          : { action: 'accept', chosen: 'original' },
     };
 
     const [resA, resB] = await Promise.all([
@@ -57,7 +63,10 @@ describe('Concurrent independent sessions', () => {
     const disconnecting = async () => {
       throw new Error('client disconnected');
     };
-    const res = await handleReviewAndSelect({ ...deps, elicit: disconnecting }, { prompt: 'p', context: 'test' });
+    const res = await handleReviewAndSelect(
+      { ...deps, elicit: disconnecting },
+      { prompt: 'p', context: 'test' }
+    );
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.selected_prompt).toBeNull();
   });
