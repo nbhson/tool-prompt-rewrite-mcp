@@ -1,0 +1,282 @@
+# Universal Prompt Gate MCP Server — Kiến trúc tổng thể
+
+> Một MCP server độc lập, hoạt động với nhiều coding agent, giúp người dùng xem xét và chọn prompt trước khi được gửi đến LLM. Hỗ trợ viết lại prompt bằng LLM local, hiển thị 3 lựa chọn (gốc / đã sửa / hủy) và đảm bảo an toàn, linh hoạt cho agent.
+
+![Kiến trúc tổng thể](Universal Prompt Gate MCP Architecture.png)
+
+## 1. Tổng quan 3 lớp
+
+Kiến trúc chia thành 4 vùng logic (5 khối lớn trên sơ đồ):
+
+### A. Coding Agents (Clients)
+
+Các agent kết nối tới server qua chuẩn MCP (stdio hoặc HTTP):
+
+- Claude Code
+- Cursor
+- Cline
+- Continue
+- OpenCode
+- Other MCP Agents (khác)
+
+**Giao diện với agent:** 2 hướng —
+
+1. `1. User submits prompt` ("thông tin viết nam") → agent gửi tới MCP Server.
+2. `4. Return approved prompt (hoặc hủy)` ← agent nhận prompt được duyệt (hoặc trạng thái hủy).
+
+Hỗ trợ 3 chế độ tích hợp: có thể có prompt trên bản hook (tùy chọn), hoặc agent-specific integration.
+
+### B. Universal Prompt Gate MCP Server (TypeScript)
+
+Lõi MCP, bao gồm:
+
+- **Transport & Lifecycle** — stdio / HTTP
+- **Tool Manager** — định nghĩa tool: `rewrite_prompt`, `review_and_select_prompt`, …
+- **Session & State Manager** — quản lý phiên, pending requests
+- **Client Capability Detector** — phát hiện tính năng trên elicitation, hooks, …
+- **Security & Validation** — giới hạn input, injection, timeout, …
+- **Logging & Monitoring** — không log prompt đầy đủ
+
+### C. Prompt Processing Layer (Lớp xử lý prompt)
+
+> **Nguyên tắc cốt lõi — Rewrite = Enrich ngữ cảnh (context enrichment)**
+>
+> Mục đích của "viết lại" **không phải** đổi ý hay thêm ý mới, mà là **cụ thể hóa prompt gốc**:
+>
+> - Thêm context bị thiếu (địa lý, thời gian, phạm vi)
+> - Thêm cấu trúc / tiêu chí output (phân loại theo hạng mục, định dạng)
+> - Thêm constraint về chất lượng (nguồn tin đáng tin cậy, độ chính xác)
+>
+> Ví dụ thực tế:
+>
+> ```
+> Input:  "thông tin việt nam"
+> Output: "Tóm tắt những tin tức mới nhất về Việt Nam hôm nay,
+>          phân loại theo kinh tế, chính trị, xã hội và công nghệ.
+>          Ưu tiên nguồn tin đáng tin cậy."
+> ```
+>
+> Việc này được điều khiển bởi **meta-prompt** (rewrite policy) — cấu hình được, không để LLM tự do phát triển ý.
+
+- **Prompt Rewriting Service** — xử lý prompt, áp dụng policy (enrichment + constraints)
+- **LLM Provider Interface** — trừu tượng hóa nhà cung cấp LLM
+- **LLM Provider Adapters (hỗ trợ):**
+  - OpenAI-compatible (local llama.cpp) — `http://127.0.0.1:8080/v1`
+  - Remote OpenAI-compatible (tùy chọn)
+
+### C.1. Rewrite Policy (Meta-Prompt) — cấu hình được
+
+Meta-prompt mẫu (mặc định, có thể override qua env `PROMPT_GATE_REWRITE_POLICY_FILE`):
+
+> Bạn là trợ giúp cụ thể hóa prompt. Nhiệm vụ: giữ nguyên ý chính của prompt gốc,
+> nhưng bổ sung context, cấu trúc output và tiêu chí chất lượng thiếu.
+> Không thêm ý hoặc requirement mới. Không hỏi lại user. Trả về duy nhất prompt
+> đã cụ thể hóa.
+>
+> Ví dụ tham chiếu:
+>
+> - Input: "thông tin việt nam"
+> - Output: "Tóm tắt những tin tức mới nhất về Việt Nam hôm nay,
+>   phân loại theo kinh tế, chính trị, xã hội và công nghệ.
+>   Ưu tiên nguồn tin đáng tin cậy."
+
+Chiến lược rewrite (mức `rewrite_level` — nhập vào tool):
+
+- `light` — enrich tối thiểu: chỉ thêm context & cấu trúc rõ ràng, giữ ngắn gọn
+- `balanced` (mặc định) — cụ thể hóa ngữ cảnh + cấu trúc output + tiêu chí chất lượng
+- `detailed` — bổ sung thêm acceptance criteria, constraint, ví dụ cụ thể; prompt dài hơn
+
+### C.2. Rewrite LLM — dùng model nhỏ, tách biệt khỏi target LLM
+
+Rewrite chạy bằng **LLM local nhỏ** (qwen3.5-9b), tách hoàn toàn khỏi LLM "lớn" sẽ nhận prompt. Meta-prompt chỉ hướng dẫn enrich — không cho LLM tự do "thêm ý", tránh drift ngữ nghĩa.
+
+### D. User Interaction Layer (Lớp tương tác người dùng)
+
+- **MCP Elicitation** — hiển thị 3 lựa chọn cho người dùng
+- **Prompt Review:**
+  - _Original:_ "thông tin việt nam"
+  - _Rewritten:_ "Tóm tắt những tin tức mới nhất về Việt Nam hôm nay, phân loại theo kinh tế, chính trị, xã hội và công nghệ. Ưu tiên nguồn tin đáng tin cậy."
+- **3 lựa chọn (khung):**
+  1. `Dùng prompt gốc` (màu xanh dương)
+  2. `Dùng prompt đã viết lại` (màu xanh lá)
+  3. `Hủy` (màu đỏ)
+- Nhận và xử lý lựa chọn
+
+### E. LLM Local (llama.cpp)
+
+- Local OpenAI-compatible API
+- Model: `qwen3.5-9b` (configurable)
+- Endpoint: `http://127.0.0.1:8080/v1`
+- API Key: `local-dev-key`
+- Timeout / Retry: `60s / 3`
+
+### F. External LLM (Optional)
+
+- OpenAI-compatible (Remote)
+- Custom endpoint (nếu cần)
+
+---
+
+## 2. Luồng hoạt động
+
+### 2.1. Standard MCP Mode
+
+```
+Coding Agent → MCP Server → LLM Provider (llama.cpp)
+   1. Submit prompt "thông tin việt nam"
+   2. Gọi LLM để viết lại prompt
+   3. Trả về bản gốc & bản đã sửa (via elicitation)
+   4. Hiển thị 3 lựa chọn (1/2/3)
+   5. User chọn (1/2/3)
+   6. Trả về prompt đã chọn (hoặc hủy)
+   7. Gửi prompt đến agent (hoặc dừng nếu hủy)
+```
+
+Trên schema, agent, MCP Server, LLM Provider (llama.cpp) và User tương tác tuần tự; bước 3 & 4 qua elicitation UI; bước 5 do người dùng quyết định; bước 7 có thể "hoặc dừng nếu hủy".
+
+### 2.2. Mandatory Gating (Khi agent hỗ trợ hooks)
+
+Agent Hook / Integration (hoặc MCP + Hook) thực thi:
+
+1. `Submit prompt`
+2. `Gọi MCP tool review_and_select_prompt`
+3. **Bên trong MCP Server (Process):**
+   - Viết lại prompt (llama.cpp)
+   - Hiển thị lựa chọn (elicitation)
+   - Người dùng lựa chọn & xác nhận
+   - Trả về kết quả (hoặc hủy)
+4. `Gửi prompt đã chọn (hoặc dừng)`
+
+Đây là chế độ "phải duyệt" — prompt không được gửi đi cho đến khi người dùng xác nhận.
+
+### 2.3. Cancellation Flow (Hủy)
+
+```
+User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi prompt tới agent/LLM → Trả về trạng thái "cancelled"
+```
+
+### 2.4. Kiến trúc đa nhà cung cấp LLM
+
+`Prompt Rewriting Service` → `LLM Provider Interface` → 3 nhóm:
+
+- Local llama.cpp (OpenAI-compatible)
+- OpenAI (cloud)
+- Other Providers (bây chọn)
+
+---
+
+## 3. Ma trận tương thích Agent
+
+> ⚠️ **Nguyên tắc "no unverified claims":** chỉ đánh dấu ✓ khi đã **test E2E thực tế**. Trạng thái hiện tại là **TBD** cho Mandatory Gating cho đến khi có E2E test trên từng agent. Không suy luận từ tên agent.
+
+| Agent       | Standard MCP | Elicitation UI | Mandatory Gating | Agent Hook/Integration | E2E Verified | Ghi chú                                                                      |
+| ----------- | ------------ | -------------- | ---------------- | ---------------------- | ------------ | ---------------------------------------------------------------------------- |
+| Claude Code | ✓            | TBD            | TBD              | Có (native hooks)      | **No**       | Hook native — verify hook có thể **block/modify** prompt hay chỉ add context |
+| Cursor      | ✓            | TBD            | TBD              | Mở rộng                | **No**       | Support MCP; UI & hook — verify extension API cho mandatory gate             |
+| Cline       | ✓            | TBD            | TBD              | Mở rộng                | **No**       | Support MCP + Extensions — verify extension có thể intercept prompt          |
+| Continue    | ✓            | TBD            | TBD              | Mở rộng                | **No**       | Support MCP + UI — verify UI có support elicitation                          |
+| OpenCode    | ✓            | TBD            | TBD              | Mở rộng                | **No**       | Support MCP + Extensions — verify hook API                                   |
+| Khác        | ✓            | TBD            | TBD              | Tùy client             | **No**       | Phụ thuộc khả năng của agent; "no claim" unless E2E tested                   |
+
+> **"Standard MCP"** ở đây chỉ nghĩa là: agent **có thể gọi** tool MCP (explicit invocation). Nó **không** đồng nghĩa với "mọi prompt của user đều đi qua gate".
+
+## 4. Tool Schemas (chi tiết)
+
+### `rewrite_prompt`
+
+- **Input (Zod):**
+  - `prompt: string` (bắt buộc)
+  - `language?: string` — ngôn ngữ ưu tiên output
+  - `context?: string` — context user bổ sung
+  - `rewrite_level?: "light" | "balanced" | "detailed"` (mặc định `balanced`)
+- **Output:**
+  - `original_prompt: string`
+  - `rewritten_prompt: string`
+  - `changes_summary: string` — mô tả các thay đổi
+  - `warnings?: string[]` — cảnh báo (vd: prompt gốc quá dài, model bỏ qua constraint…)
+- **Hạn chế:** tool này **chỉ sinh** rewrite — **không** claim đã approve. Approval thuộc về `review_and_select_prompt`.
+
+### `review_and_select_prompt`
+
+- **Input (Zod):**
+  - `prompt: string` (bắt buộc)
+  - `language?: string`
+  - `context?: string`
+  - `rewrite_level?: "light" | "balanced" | "detailed"`
+- **Output khi approve:**
+  ```json
+  {
+    "status": "approved",
+    "selected_option": "original" | "rewritten",
+    "selected_prompt": "…",
+    "original_prompt": "…",
+    "rewritten_prompt": "…"
+  }
+  ```
+- **Output khi cancel:**
+  ```json
+  {
+    "status": "cancelled",
+    "selected_option": "cancel",
+    "selected_prompt": null
+  }
+  ```
+- **Hành vi:**
+  1. Validate input (Zod)
+  2. Sinh rewritten prompt
+  3. Hiển thị cả 2 bản qua MCP elicitation (nếu client hỗ trợ)
+  4. Yêu cầu user chọn **chính xác 1**
+  5. Return **chỉ** prompt approved + decision metadata
+  6. Xử lý explicit: cancel, client không support elicitation (trả clear compatibility error / fallback UI đã cấu hình riêng)
+  7. **Không** silent fallback sang original sau error
+  8. **Không** auto-select sau timeout
+
+### `get_client_capabilities`
+
+- **Output:**
+  - `elicitation_supported: boolean`
+  - `structured_elicitation_supported: boolean`
+  - `transport: "stdio" | "http"`
+  - `integration_mode: "standard" | "hook" | "none"`
+  - `mandatory_gating_enforceable: boolean`
+- **Nguyên tắc:** chỉ báo cáo **dựa trên protocol negotiation thực tế** + config. **Không** suy luận từ tên agent.
+
+---
+
+## 5. Biến môi trường quan trọng
+
+| Biến                              | Default                                                | Vai trò                             |
+| --------------------------------- | ------------------------------------------------------ | ----------------------------------- |
+| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)    |
+| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model LLM                       |
+| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local)                     |
+| `PROMPT_GATE_TIMEOUT_MS`          | `60000`                                                | Timeout (ms) cho LLM                |
+| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | Chế độ transport                    |
+| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud        |
+| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset) |
+
+> **Tách 2 trục:** `rewrite_level` (per-call, input tool: `light`/`balanced`/`detailed`) ≠ `PROMPT_GATE_REWRITE_POLICY_FILE` (global default meta-prompt preset).
+
+---
+
+## 6. Tính bảo mật & độ tin cậy
+
+- Giới hạn độ dài input, validate output (Zod)
+- Timeout & cancellation (explicit)
+- **Không silent fallback**: sau LLM error, **không** auto-chọn original — trả về lỗi rõ ràng
+- **Không auto-select sau timeout**: user phải chọn thủ công
+- **Cancel = distinct protocol outcome**: response `status=cancelled`, **không** expose approved prompt
+- Phát hiện injection; treat prompt as untrusted data
+- Quản lý session; **isolation per session/request ID**; cleanup abandoned requests
+- Không log prompt đầy đủ; redact secrets trong log; không placeholder credentials
+- Không tự động forward khi hủy; không thực thi shell từ prompt
+- STDIO là default; HTTP phải secure (không expose unauthenticated ra public)
+
+## 7. Tài liệu & Hỗ trợ
+
+- `README.md` — Cài đặt & cấu hình
+- Hướng dẫn kết nối với agent
+- Bảng tương thích chi tiết
+- MCP Inspector — Test & debug
+- Ví dụ cấu hình llama.cpp
+- Khắc phục sự cố (Troubleshooting)
