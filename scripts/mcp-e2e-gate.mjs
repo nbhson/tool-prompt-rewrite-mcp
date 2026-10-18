@@ -13,8 +13,10 @@
  *   3. Calls `get_client_capabilities` and prints the result.
  *   4. Calls `review_and_select_prompt` with a tiny prompt + context.
  *   5. When the server sends an `elicitation/create` request, auto-answers:
- *      the LEVEL picker gets "balanced", the SELECTION picker gets
- *      "rewritten", then prints the final result.
+ *      the LEVEL picker gets "balanced"; on the SELECTION picker the first
+ *      round requests a revision ("update" + feedback) and the second round
+ *      gets "rewritten" — exercising the update loop — then prints the
+ *      final result.
  *
  * If your llama.cpp is not running, the LLM step will fail — that's fine,
  * the point of this script is to prove the elicitation round-trip works.
@@ -35,6 +37,7 @@ child.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
 
 const rl = createInterface({ input: child.stdout });
 let msgId = 1;
+let selectionRounds = 0;
 const pending = new Map();
 
 function send(method, params = {}) {
@@ -65,19 +68,29 @@ rl.on('line', (line) => {
     console.log('\n[elicitation request from server]');
     console.log(JSON.stringify(msg.params, null, 2));
     // Auto-answer to prove the round-trip: the level picker (light/balanced/
-    // detailed) gets "balanced"; the selection picker (original/rewritten/
-    // cancel) gets "rewritten".
+    // detailed) gets "balanced"; on the selection picker (original/
+    // rewritten/update/cancel) the first round picks "update" + feedback
+    // (exercising the revision loop) and later rounds pick "rewritten".
     const enumVals = msg.params?.requestedSchema?.properties?.selected?.enum ?? [];
-    const chosen = enumVals.includes('rewritten')
-      ? 'rewritten'
-      : enumVals.includes('balanced')
-        ? 'balanced'
-        : enumVals[0];
-    console.log(`[auto-answer] selected: ${chosen}`);
+    const content = {};
+    if (enumVals.includes('rewritten')) {
+      selectionRounds += 1;
+      if (selectionRounds === 1) {
+        content.selected = 'update';
+        content.feedback = 'Keep it short and add acceptance criteria.';
+      } else {
+        content.selected = 'rewritten';
+      }
+    } else if (enumVals.includes('balanced')) {
+      content.selected = 'balanced';
+    } else {
+      content.selected = enumVals[0];
+    }
+    console.log(`[auto-answer] selected: ${content.selected}`);
     const resp = {
       jsonrpc: '2.0',
       id: msg.id,
-      result: { action: 'accept', content: { selected: chosen } },
+      result: { action: 'accept', content },
     };
     child.stdin.write(JSON.stringify(resp) + '\n');
     return;
@@ -118,7 +131,8 @@ async function main() {
   console.log('PASS: server sees elicitation as supported.');
 
   // 3. gate tool (this is where the pickers would appear in VS Code: first
-  // the level picker, then the original/rewritten/cancel picker)
+  // the level picker, then the original/rewritten/update/cancel picker; the
+  // auto-answer exercises one "update" revision round in between)
   const t0 = Date.now();
   const result = await send('tools/call', {
     name: 'review_and_select_prompt',

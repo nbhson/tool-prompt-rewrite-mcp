@@ -11,14 +11,17 @@
  *
  *   rewrite - just test rewrite_prompt (no user interaction needed)
  *   gate    - test review_and_select_prompt; auto-answers the level picker
- *             with "balanced" and the selection picker with "rewritten"
+ *             with "balanced", requests a revision ("update" + feedback) on
+ *             the first selection round, then answers "rewritten" on the
+ *             second round (exercises the update loop end-to-end)
  *   caps    - declare NO elicitation; get_client_capabilities must say false
  *   caps-decl - declare elicitation; get_client_capabilities must say true
  *   echo    - client declares NO elicitation; the gate tool returns
- *             pending_level_selection first (text fallback), then a re-call
- *             with rewrite_level="light" returns pending_user_selection,
- *             and a final call with selection="rewritten" completes the
- *             gate without another LLM call
+ *             pending_level_selection first (text fallback), a re-call with
+ *             rewrite_level="light" returns pending_user_selection, a
+ *             selection="update" + feedback re-call returns a NEW
+ *             pending_user_selection, and a final selection="rewritten"
+ *             completes the gate without another LLM call
  */
 
 import { spawn } from 'node:child_process';
@@ -42,6 +45,7 @@ const child = spawn('node', [join(__dirname, '..', 'build', 'index.js')], {
 
 let buffer = '';
 let nextId = 0;
+let selectionRounds = 0;
 const pending = new Map();
 
 function send(method, params) {
@@ -70,19 +74,27 @@ child.stdout.on('data', (chunk) => {
     }
 
     // Server->client request (elicitation). Auto-answer: the level picker
-    // gets "balanced", the selection picker gets "rewritten".
+    // gets "balanced"; on the selection picker the first round requests a
+    // revision ("update" + feedback) and later rounds accept "rewritten".
     if (msg.id !== undefined && msg.method) {
       console.error(`[server->client] ${msg.method}`);
       const content = {};
       if (msg.params?.requestedSchema?.properties?.selected) {
         const enumVals = msg.params.requestedSchema.properties.selected.enum ?? [];
-        // Prefer rewritten (selection picker), then balanced (level picker),
-        // else the first option.
-        content.selected = enumVals.includes('rewritten')
-          ? 'rewritten'
-          : enumVals.includes('balanced')
-            ? 'balanced'
-            : enumVals[0];
+        if (enumVals.includes('rewritten')) {
+          // Selection picker.
+          selectionRounds += 1;
+          if (selectionRounds === 1) {
+            content.selected = 'update';
+            content.feedback = 'Keep it short and add acceptance criteria.';
+          } else {
+            content.selected = 'rewritten';
+          }
+        } else if (enumVals.includes('balanced')) {
+          content.selected = 'balanced';
+        } else {
+          content.selected = enumVals[0];
+        }
         console.error(`[server->client] auto-answer: ${content.selected}`);
       }
       child.stdin.write(
@@ -205,9 +217,45 @@ try {
     console.log('ORIGINAL:', sc2?.original_prompt);
     console.log('REWRITTEN:', sc2?.rewritten_prompt);
     console.log('MENU:', sc2?.available_selections?.join(', '));
+    if (!sc2?.available_selections?.includes('update')) {
+      console.error('FAIL: selection menu must offer "update"');
+      child.kill();
+      process.exit(1);
+    }
 
-    // Simulate the user picking "rewritten": the agent re-calls with the
-    // user's selection. This must NOT call the LLM again.
+    // Simulate the user picking "update" and describing changes: the agent
+    // re-calls with the user's selection + feedback. This must rewrite
+    // again (new LLM call) and return a NEW pending_user_selection.
+    const r2b = await rpc('tools/call', {
+      name: 'review_and_select_prompt',
+      arguments: {
+        prompt: 'thông tin việt nam',
+        rewrite_level: 'light',
+        context: 'e2e echo test',
+        selection: 'update',
+        feedback: 'Keep it shorter and add acceptance criteria.',
+        rewritten_prompt: sc2?.rewritten_prompt,
+      },
+    });
+    console.log(`\n=== [${secs()}s] call 3: re-call with selection=update + feedback ===`);
+    if (r2b.isError) {
+      console.error('ERROR:', r2b.structuredContent?.message ?? r2b.content?.[0]?.text);
+      child.kill();
+      process.exit(1);
+    }
+    const sc2b = r2b.structuredContent;
+    console.log('STATUS:', sc2b?.status);
+    console.log('REVISION:', sc2b?.revision_count);
+    console.log('REWRITTEN:', sc2b?.rewritten_prompt);
+    if (sc2b?.status !== 'pending_user_selection' || sc2b?.revision_count !== 1) {
+      console.error(`FAIL: expected a new pending_user_selection with revision_count=1, got ${sc2b?.status}`);
+      child.kill();
+      process.exit(1);
+    }
+
+    // Simulate the user picking "rewritten" on the revised version: the
+    // agent re-calls with the user's selection. This must NOT call the LLM
+    // again.
     const r3 = await rpc('tools/call', {
       name: 'review_and_select_prompt',
       arguments: {
@@ -215,10 +263,10 @@ try {
         rewrite_level: 'light',
         context: 'e2e echo test',
         selection: 'rewritten',
-        rewritten_prompt: sc2?.rewritten_prompt,
+        rewritten_prompt: sc2b?.rewritten_prompt,
       },
     });
-    console.log(`\n=== [${secs()}s] call 3: re-call with selection=rewritten ===`);
+    console.log(`\n=== [${secs()}s] call 4: re-call with selection=rewritten ===`);
     if (r3.isError) {
       console.error('ERROR:', r3.structuredContent?.message ?? r3.content?.[0]?.text);
       child.kill();
@@ -241,7 +289,7 @@ try {
       arguments: { prompt: 'thông tin việt nam', context: 'e2e gate test' },
     });
     console.log(
-      `\n=== [${secs()}s] review_and_select_prompt (auto-answered: level=balanced, selection=rewritten) ===`
+      `\n=== [${secs()}s] review_and_select_prompt (auto-answered: level=balanced, round 1=update+feedback, round 2=rewritten) ===`
     );
     if (r.isError) {
       console.error('ERROR:', r.structuredContent?.message ?? r.content?.[0]?.text);

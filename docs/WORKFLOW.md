@@ -23,10 +23,11 @@ flowchart TD
     RE["Trả về <b>error outcome</b><br/>(<b>không</b> silent fallback)"]:::mcp
     E["Hiển thị ORIGINAL &amp; REWRITTEN<br/>qua MCP elicitation"]:::mcp
     U0(["👤 USER chọn LEVEL<br/>(bắt buộc)"]):::user
-    U2(["👤 USER chọn 1 trong 3"]):::user
+    U2(["👤 USER chọn 1 trong 4"]):::user
     CHOICE{"Lựa chọn"}:::mcp
     O1["Use original<br/>(chọn prompt gốc)"]:::mcp
     O2["Use rewritten<br/>(dùng bản đã enrich)"]:::mcp
+    O4["Update<br/>(nhập feedback chỉnh sửa<br/>rồi rewrite lại — loop)"]:::mcp
     O3["Cancel<br/>(hủy, không dùng cả 2)"]:::mcp
   end
 
@@ -47,10 +48,12 @@ flowchart TD
   RM -->|thất bại: timeout / HTTP / empty| RE
   RM -->|thành công| E
   E -->|"7. elicitation: chọn bản dùng"| U2
-  U2 -->|8. chọn 1 trong 3| CHOICE
+  U2 -->|8. chọn 1 trong 4| CHOICE
   CHOICE -->|9a| O1
   CHOICE -->|9b| O2
+  CHOICE -->|9d| O4
   CHOICE -->|9c| O3
+  O4 -->|"10d. feedback → rewrite lại (loop)"| R
 
   O1 -->|10a. <b>approved</b>: original<br/>status=approved<br/>selected_prompt=original| A3
   O2 -->|10b. <b>approved</b>: rewritten<br/>status=approved<br/>selected_prompt=rewritten| A3

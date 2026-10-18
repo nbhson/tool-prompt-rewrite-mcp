@@ -10,16 +10,19 @@
  *   shown before the rewrite; without it, the text fallback returns
  *   "pending_level_selection" and the agent relays the user's choice in
  *   `rewrite_level`.
+ * - The selection menu offers original / rewritten / UPDATE / cancel.
+ *   "update" lets the user request changes (free-text feedback); the tool
+ *   rewrites again and loops until the user picks one of the other three.
  * - Cancel NEVER produces an approved prompt.
  * - Errors NEVER silently fall back to the original.
  * - Timeout NEVER auto-selects an option.
  * - When the client does not support elicitation:
  *   - default (PROMPT_GATE_ECHO_FALLBACK=true): return
  *     "pending_level_selection" (level menu) and/or
- *     "pending_user_selection" (original/rewritten/cancel menu) results
- *     that render the choices in plain text; the agent asks the user and
- *     re-calls this tool with the user's choice. This is an EXPLICIT user
- *     choice relayed by the agent, not a silent fallback.
+ *     "pending_user_selection" (original/rewritten/update/cancel menu)
+ *     results that render the choices in plain text; the agent asks the
+ *     user and re-calls this tool with the user's choice. This is an
+ *     EXPLICIT user choice relayed by the agent, not a silent fallback.
  *   - strict (PROMPT_GATE_ECHO_FALLBACK=false): return a clear
  *     compatibility error — do not pretend a normal tool response is an
  *     interactive confirmation.
@@ -43,8 +46,15 @@ import { GateError, type ReviewResult, type PromptSelection, type RewriteLevel }
 import type { Logger } from '../logger.js';
 import type { ClientCapabilities } from '../capability/capability.js';
 
-export const SELECTION_VALUES: readonly PromptSelection[] = ['original', 'rewritten', 'cancel'];
+export const SELECTION_VALUES: readonly PromptSelection[] = ['original', 'rewritten', 'update', 'cancel'];
 export const LEVEL_VALUES: readonly RewriteLevel[] = ['light', 'balanced', 'detailed'];
+
+/** Response shape of the gate tool (loose: structuredContent varies by status). */
+export type GateToolResponse = {
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+};
 
 export const ReviewAndSelectInputSchema = z.object({
   prompt: z
@@ -87,23 +97,34 @@ export const ReviewAndSelectInputSchema = z.object({
         'criteria).'
     ),
   selection: z
-    .enum(['original', 'rewritten', 'cancel'])
+    .enum(['original', 'rewritten', 'update', 'cancel'])
     .optional()
     .describe(
-      "ONLY for the SECOND call of a pending_user_selection flow: the user's explicit " +
+      "ONLY for a re-call after a pending_user_selection flow: the user's explicit " +
         'choice after the server could not show an interactive picker. On the first call ' +
-        '(rewrite) this must be omitted. Values: "original", "rewritten", "cancel". ' +
-        'Never auto-select; pass it only after the user has chosen.'
+        '(rewrite) this must be omitted. Values: "original", "rewritten", "cancel", or ' +
+        '"update" (the user wants changes: pass their request in `feedback`; the tool ' +
+        'rewrites again and returns a NEW "pending_user_selection"). Never auto-select; ' +
+        'pass it only after the user has chosen.'
+    ),
+  feedback: z
+    .string()
+    .max(4_000)
+    .optional()
+    .describe(
+      'ONLY with selection="update": the changes the user asked for, in their own ' +
+        'words (e.g. "make it shorter", "add acceptance criteria for X", "keep the ' +
+        'tone casual"). The tool applies them in the next rewrite. Required when ' +
+        'selection="update". Never invent feedback for the user.'
     ),
   rewritten_prompt: z
     .string()
     .max(32_000)
     .optional()
     .describe(
-      'ONLY for the SECOND call of a pending_user_selection flow: the exact rewritten ' +
-        'text the user saw in the first call\'s "pending_user_selection" result. ' +
-        'Omit on the first call. When present with selection="rewritten", this is what ' +
-        'gets approved — so the user approves exactly what they read, not a re-rewrite.'
+      'The exact rewritten text the user saw. Pass it with `selection`="rewritten" ' +
+        '(this is what gets approved — the user approves exactly what they read) and ' +
+        'with `selection`="update" (the previous rewrite to revise). Omit on the first call.'
     ),
 });
 
@@ -111,7 +132,48 @@ export type ReviewAndSelectInput = z.infer<typeof ReviewAndSelectInputSchema>;
 
 const OPTION_ORIGINAL = 'original';
 const OPTION_REWRITTEN = 'rewritten';
+const OPTION_UPDATE = 'update';
 const OPTION_CANCEL = 'cancel';
+
+/** Defensive cap for revision rounds inside a single tool call. */
+const MAX_REVISIONS = 25;
+
+/** Free-text field offered together with the selection options. */
+const FEEDBACK_FIELD = {
+  title: 'Requested changes (only if you choose "update")',
+  description:
+    'Describe what should change in the rewritten prompt (e.g. "shorter", ' +
+    '"add acceptance criteria for X"). Only used when "update" is selected.',
+};
+
+/**
+ * The selection options: original / rewritten / UPDATE / cancel. "update"
+ * keeps the loop going — the user writes feedback and the prompt is
+ * rewritten again until they pick one of the other three.
+ */
+const SELECTION_OPTIONS: ElicitationOption[] = [
+  {
+    value: OPTION_ORIGINAL,
+    title: 'Use original prompt',
+    description: "Keep the user's exact text.",
+  },
+  {
+    value: OPTION_REWRITTEN,
+    title: 'Use rewritten prompt',
+    description: 'Use the LLM-enriched version.',
+  },
+  {
+    value: OPTION_UPDATE,
+    title: 'Update — request changes',
+    description:
+      'Describe the changes in the text field; the prompt is rewritten again (loop) until you finalize.',
+  },
+  {
+    value: OPTION_CANCEL,
+    title: 'Cancel',
+    description: 'Abort; do not use either prompt.',
+  },
+];
 
 /**
  * The level picker options. The user MUST pick one of these before the
@@ -160,14 +222,7 @@ export function buildElicitDeps(deps: ReviewDeps) {
  * Core handler logic, separated from MCP tool registration so it can be
  * unit-tested without a live MCP server connection.
  */
-export async function handleReviewAndSelect(
-  deps: ReviewDeps,
-  rawInput: unknown
-): Promise<{
-  content: { type: 'text'; text: string }[];
-  isError?: boolean;
-  structuredContent?: Record<string, unknown>;
-}> {
+export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown): Promise<GateToolResponse> {
   const { elicit } = buildElicitDeps(deps);
   const { log, rewrite } = deps;
   const echoFallback = deps.echoFallback ?? true;
@@ -179,11 +234,15 @@ export async function handleReviewAndSelect(
 
   // ── Fast path: re-invocation after pending_user_selection ───────────
   // When the first call returned "pending_user_selection" (the client does
-  // not support elicitation), the agent shows the three choices to the user,
-  // the user picks one, and the agent calls this tool again WITH the
-  // user's `selection`. This path does NOT call the LLM again — it simply
-  // maps the explicit choice to the approved/cancelled outcome.
-  if (input.selection) {
+  // not support elicitation), the agent shows the choices to the user, the
+  // user picks one, and the agent calls this tool again WITH the user's
+  // `selection`. For original/rewritten/cancel this path does NOT call the
+  // LLM again — it simply maps the explicit choice to the outcome (the
+  // rewrite was already produced and approved as-is).
+  //
+  // "update" is NOT a final choice: the user wants changes, so it must
+  // rewrite again. It falls through to the revision flow below.
+  if (input.selection && input.selection !== OPTION_UPDATE) {
     const chosen = input.selection;
     log.info('review_and_select_prompt: selection received', {
       requestId,
@@ -237,6 +296,367 @@ export async function handleReviewAndSelect(
 
   log.info('review_and_select_prompt: started', { requestId, promptLen: input.prompt.length });
 
+  // ── Shared state: the current (re)write candidate ───────────────────
+  // These always describe the LATEST round: the first rewrite, or the
+  // revision produced after the user picked "update". The review loop
+  // re-reads them on every round.
+  let level: RewriteLevel;
+  let original = input.prompt;
+  let rewritten = input.prompt;
+  let changesSummary = 'No rewrite was attempted.';
+  let warnings: string[] | undefined;
+  let revisionCount = 0;
+
+  /**
+   * Run one rewrite round. Returns an error response to early-return, or
+   * null on success (state updated in place). When `feedback` is set this
+   * is a revision round: the LLM revises `previousRewrite` (normally the
+   * rewrite the user just reviewed) following the user's requested changes.
+   */
+  const doRewrite = async (feedback?: string, previousRewrite?: string): Promise<GateToolResponse | null> => {
+    try {
+      const r = await rewrite.rewrite(input.prompt, {
+        level,
+        language: input.language,
+        context: input.context,
+        feedback,
+        previousRewrite,
+      });
+      original = r.originalPrompt;
+      rewritten = r.rewrittenPrompt;
+      changesSummary = r.changesSummary;
+      warnings = r.warnings;
+      return null;
+    } catch (err) {
+      const ge = normalizeGateError(err, requestId);
+      log.error('review_and_select_prompt: rewrite failed', {
+        requestId,
+        kind: ge.kind,
+        message: ge.message,
+        revision: Boolean(feedback),
+        elapsedMs: Date.now() - start,
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: feedback
+              ? `Prompt gate failed while applying the requested changes: ${ge.message}`
+              : `Prompt gate failed before user selection: ${ge.message}`,
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: ge.kind,
+          message: ge.message,
+          selected_prompt: null,
+        },
+      };
+    }
+  };
+
+  /**
+   * Step 3: user review loop. Shows the original + current rewrite with the
+   * original / rewritten / update / cancel options.
+   *
+   * - "original" / "rewritten" → approved; the loop ends.
+   * - "cancel" (or dialog abort) → cancelled; the loop ends.
+   * - "update" → the user's free-text feedback triggers another rewrite
+   *   round (same level) and the loop shows the new version again.
+   *
+   * When the client cannot show elicitation, the echo fallback returns
+   * "pending_user_selection" and the agent relays the choice through
+   * `selection` (+ `feedback` for update); each relayed update round
+   * re-enters this same loop.
+   */
+  const selectionLoop = async (): Promise<GateToolResponse> => {
+    let emptyFeedbackRounds = 0;
+    let revisionNote: string | undefined;
+
+    for (;;) {
+      const message = [
+        revisionCount > 0
+          ? `Review the original prompt and the revised rewrite (revision ${revisionCount}), then choose one:`
+          : 'Review the original prompt and the rewritten prompt, then choose one:',
+        '',
+        '--- ORIGINAL ---',
+        original,
+        '',
+        '--- REWRITTEN ---',
+        rewritten,
+        '',
+        `Changes: ${changesSummary}`,
+        warnings?.length ? `Warnings: ${warnings.join('; ')}` : '',
+        revisionNote ?? '',
+        '',
+        'To request changes instead, choose "update" and describe them in the text field.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      let outcome: ElicitationResult;
+      try {
+        outcome = await elicit({
+          step: 'selection',
+          message,
+          options: SELECTION_OPTIONS,
+          requestId,
+          feedback: FEEDBACK_FIELD,
+        });
+      } catch (err) {
+        const ge = err instanceof GateError ? err : new GateError('unknown', String(err), { requestId });
+        log.warn('review_and_select_prompt: elicitation issue', { requestId, kind: ge.kind });
+
+        // Elicitation unsupported (client did not declare the capability, or
+        // the request was refused by the protocol). Two behaviors:
+        //
+        // 1. echoFallback=true (default): return a distinct
+        //    "pending_user_selection" result that renders the numbered
+        //    choices in plain text and instructs the agent to re-call this
+        //    tool with the user's `selection`. This is an EXPLICIT user
+        //    choice relayed by the agent — not a silent fallback, not an
+        //    auto-select. "update" loops: selecting it with `feedback`
+        //    rewrites again and returns a NEW pending_user_selection.
+        //
+        // 2. echoFallback=false (strict): hard compatibility error, as before.
+        if (ge.kind === 'elicitation_unsupported' && echoFallback) {
+          const supports = detect ? detect().elicitationSupported : false;
+          const menu = [
+            'The client does not support MCP elicitation, so an interactive picker ' +
+              'cannot be shown. Below are the two versions; ask the user to choose, ' +
+              "then re-call this tool with the user's choice in `selection`.",
+            '',
+            '--- ORIGINAL ---',
+            original,
+            '',
+            '--- REWRITTEN ---',
+            rewritten,
+            revisionCount > 0
+              ? `(Revised ${revisionCount} time(s) following the user's requested changes.)`
+              : '',
+            '',
+            `Changes: ${changesSummary}`,
+            warnings?.length ? `Warnings: ${warnings.join('; ')}` : '',
+            '',
+            'REPLY TO THE USER: "Which should be used?", with these numbered options:',
+            "[1] original — use the user's exact text",
+            '[2] rewritten — use the LLM-enriched version',
+            '[3] update — request changes: describe what to adjust, then the prompt is rewritten again',
+            '[4] cancel — use neither; abort the prompt gate',
+            '',
+            'When the user answers, call review_and_select_prompt again with the ' +
+              'SAME prompt/context/rewrite_level/language and `selection` set to:',
+            '- "original" or "rewritten" — to finalize (pass `rewritten_prompt` the ' +
+              'user saw when choosing "rewritten");',
+            '- "cancel" — to abort;',
+            '- "update" — PLUS `feedback` with the requested changes; the tool then ' +
+              'rewrites again and returns a NEW pending_user_selection to review. ' +
+              'Repeat until the user picks original, rewritten, or cancel.',
+            'Never pick for the user.',
+          ]
+            .filter(Boolean)
+            .join('\n');
+          return {
+            content: [{ type: 'text', text: menu }],
+            structuredContent: {
+              status: 'pending_user_selection',
+              original_prompt: original,
+              rewritten_prompt: rewritten,
+              changes_summary: changesSummary,
+              ...(warnings?.length ? { warnings } : {}),
+              available_selections: ['original', 'rewritten', 'update', 'cancel'],
+              revision_count: revisionCount,
+              client_elicitation_supported: supports,
+              request_id: requestId,
+            },
+          };
+        }
+
+        if (ge.kind === 'elicitation_unsupported' || ge.kind === 'invalid_input') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'This client does not support interactive elicitation, or the selection was invalid. ' +
+                  'The prompt was NOT forwarded. Set PROMPT_GATE_ECHO_FALLBACK=true to enable the ' +
+                  'text fallback (default), or configure a client that supports MCP elicitation.',
+              },
+            ],
+            isError: true,
+            structuredContent: {
+              status: 'error',
+              error_kind: ge.kind,
+              message: ge.message,
+              selected_prompt: null,
+            },
+          };
+        }
+        return {
+          content: [{ type: 'text', text: `Elicitation error: ${ge.message}` }],
+          isError: true,
+          structuredContent: {
+            status: 'error',
+            error_kind: ge.kind,
+            message: ge.message,
+            selected_prompt: null,
+          },
+        };
+      }
+
+      log.info('review_and_select_prompt: user chose', {
+        requestId,
+        action: outcome.action,
+        chosen: outcome.action === 'accept' ? outcome.chosen : 'n/a',
+        elapsedMs: Date.now() - start,
+      });
+
+      // The user picked the explicit "cancel" option, or aborted the dialog.
+      if (outcome.action === 'cancel' || outcome.chosen === OPTION_CANCEL) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Prompt gate: user cancelled. No prompt was approved and none was forwarded.',
+            },
+          ],
+          structuredContent: { status: 'cancelled', selected_option: 'cancel', selected_prompt: null },
+        };
+      }
+
+      // "update": the user wants changes. Apply the feedback and loop.
+      if (outcome.chosen === OPTION_UPDATE) {
+        const feedback = (outcome.feedback ?? '').trim();
+        if (!feedback) {
+          emptyFeedbackRounds += 1;
+          if (emptyFeedbackRounds > 1) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    'The user chose "update" but did not describe the changes. ' +
+                    'Nothing was forwarded; ask the user for the changes and re-run the gate.',
+                },
+              ],
+              isError: true,
+              structuredContent: {
+                status: 'error',
+                error_kind: 'invalid_input',
+                message: 'update selected without feedback',
+                selected_prompt: null,
+              },
+            };
+          }
+          revisionNote =
+            'You chose "update" but did not describe the changes yet — write them in ' +
+            'the text field and choose "update" again.';
+          continue;
+        }
+
+        if (revisionCount >= MAX_REVISIONS) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Reached the revision limit (${MAX_REVISIONS}) for a single gate call. ` +
+                  'Ask the user to finalize: "original", "rewritten", or "cancel".',
+              },
+            ],
+            isError: true,
+            structuredContent: {
+              status: 'error',
+              error_kind: 'revision_limit',
+              message: `revision limit (${MAX_REVISIONS}) reached`,
+              selected_prompt: null,
+            },
+          };
+        }
+
+        emptyFeedbackRounds = 0;
+        revisionNote = undefined;
+        revisionCount += 1;
+        log.info('review_and_select_prompt: revision requested', { requestId, revision: revisionCount });
+        const failed = await doRewrite(feedback, rewritten);
+        if (failed) return failed;
+        continue;
+      }
+
+      // "original" / "rewritten" → approved; the loop ends here.
+      const result: ReviewResult =
+        outcome.chosen === OPTION_REWRITTEN
+          ? {
+              status: 'approved',
+              selectedOption: 'rewritten',
+              selectedPrompt: rewritten,
+              originalPrompt: original,
+              rewrittenPrompt: rewritten,
+            }
+          : {
+              status: 'approved',
+              selectedOption: 'original',
+              selectedPrompt: original,
+              originalPrompt: original,
+              rewrittenPrompt: rewritten,
+            };
+
+      const text = `Prompt gate: approved "${result.selectedOption}" prompt.\n\n${result.selectedPrompt}`;
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: {
+          status: 'approved',
+          selected_option: result.selectedOption,
+          selected_prompt: result.selectedPrompt,
+          original_prompt: result.originalPrompt,
+          rewritten_prompt: result.rewrittenPrompt,
+        },
+      };
+    }
+  };
+
+  // ── "update" relay (text fallback): the user asked for changes ──────
+  // The previous call returned pending_user_selection, the user picked
+  // "update", and the agent relays their feedback here. This is NOT a
+  // final choice, so we rewrite again (revising the text the user saw)
+  // and re-enter the review loop. No level picker is shown: the level was
+  // chosen in the first call and is relayed via `rewrite_level`.
+  if (input.selection === OPTION_UPDATE) {
+    const feedback = input.feedback?.trim();
+    if (!feedback) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'selection="update" requires `feedback` describing the changes the user ' +
+              'asked for. Nothing was forwarded.',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'invalid_input',
+          message: 'feedback is required when selection="update"',
+          selected_prompt: null,
+        },
+      };
+    }
+
+    level = input.rewrite_level ?? 'balanced';
+    log.info('review_and_select_prompt: revision requested (relay)', {
+      requestId,
+      level,
+      feedbackLen: feedback.length,
+    });
+    const failed = await doRewrite(feedback, input.rewritten_prompt);
+    if (failed) return failed;
+    revisionCount = 1;
+
+    return await selectionLoop();
+  }
+
   // ── Step 1: the USER chooses the rewrite level (mandatory) ──────────
   // The agent must never decide the level for the gate flow. When the
   // client supports elicitation we always show the picker (any
@@ -245,12 +665,11 @@ export async function handleReviewAndSelect(
   // user and relays their choice back in `rewrite_level` on the next
   // call. `rewrite_level` is a RELAY channel for the user's choice, not
   // an agent-decided setting.
-  let level: RewriteLevel;
 
   const levelMessage =
     'Choose how much to enrich the prompt. The prompt will be rewritten at ' +
     'this level; you will then pick between the original and the rewritten ' +
-    'version.';
+    'version — or request changes to the rewrite.';
 
   try {
     const levelOutcome = await elicit({
@@ -347,196 +766,11 @@ export async function handleReviewAndSelect(
 
   // ── Step 2: generate the rewrite AT THE LEVEL THE USER CHOSE ────────
   // On LLM failure we do NOT fall back to original — we surface a
-  // distinct error outcome.
-  let original = input.prompt;
-  let rewritten = input.prompt;
-  let changesSummary = 'No rewrite was attempted.';
-  let warnings: string[] | undefined;
+  // distinct error outcome (see doRewrite).
+  const failed = await doRewrite();
+  if (failed) return failed;
 
-  try {
-    const r = await rewrite.rewrite(input.prompt, {
-      level,
-      language: input.language,
-      context: input.context,
-    });
-    original = r.originalPrompt;
-    rewritten = r.rewrittenPrompt;
-    changesSummary = r.changesSummary;
-    warnings = r.warnings;
-  } catch (err) {
-    const ge = normalizeGateError(err, requestId);
-    log.error('review_and_select_prompt: rewrite failed', {
-      requestId,
-      kind: ge.kind,
-      message: ge.message,
-      elapsedMs: Date.now() - start,
-    });
-    return {
-      content: [{ type: 'text', text: `Prompt gate failed before user selection: ${ge.message}` }],
-      isError: true,
-      structuredContent: {
-        status: 'error',
-        error_kind: ge.kind,
-        message: ge.message,
-        selected_prompt: null,
-      },
-    };
-  }
-
-  // 3. Show both versions and ask the user to choose.
-  const message = [
-    'Review the original prompt and the rewritten prompt, then choose one:',
-    '',
-    '--- ORIGINAL ---',
-    original,
-    '',
-    '--- REWRITTEN ---',
-    rewritten,
-    '',
-    `Changes: ${changesSummary}`,
-    warnings?.length ? `Warnings: ${warnings.join('; ')}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  const options: ElicitationOption[] = [
-    { value: OPTION_ORIGINAL, title: 'Use original prompt', description: "Keep the user's exact text." },
-    { value: OPTION_REWRITTEN, title: 'Use rewritten prompt', description: 'Use the LLM-enriched version.' },
-    { value: OPTION_CANCEL, title: 'Cancel', description: 'Abort; do not use either prompt.' },
-  ];
-
-  let outcome: ElicitationResult;
-  try {
-    outcome = await elicit({ step: 'selection', message, options, requestId });
-  } catch (err) {
-    const ge = err instanceof GateError ? err : new GateError('unknown', String(err), { requestId });
-    log.warn('review_and_select_prompt: elicitation issue', { requestId, kind: ge.kind });
-
-    // Elicitation unsupported (client did not declare the capability, or the
-    // request was refused by the protocol). Two behaviors:
-    //
-    // 1. echoFallback=true (default): return a distinct
-    //    "pending_user_selection" result that renders the three numbered
-    //    choices in plain text and instructs the agent to re-call this tool
-    //    with the user's `selection`. This is an EXPLICIT user choice
-    //    relayed by the agent — not a silent fallback, not an auto-select.
-    //
-    // 2. echoFallback=false (strict): hard compatibility error, as before.
-    if (ge.kind === 'elicitation_unsupported' && echoFallback) {
-      const supports = detect ? detect().elicitationSupported : false;
-      const menu = [
-        'The client does not support MCP elicitation, so an interactive picker ' +
-          'cannot be shown. Below are the two versions; ask the user to choose, ' +
-          "then re-call this tool with the user's choice in `selection`.",
-        '',
-        '--- ORIGINAL ---',
-        original,
-        '',
-        '--- REWRITTEN ---',
-        rewritten,
-        '',
-        `Changes: ${changesSummary}`,
-        warnings?.length ? `Warnings: ${warnings.join('; ')}` : '',
-        '',
-        'REPLY TO THE USER: "Which should be used?", with these numbered options:',
-        "[1] original — use the user's exact text",
-        '[2] rewritten — use the LLM-enriched version',
-        '[3] cancel — use neither; abort the prompt gate',
-        '',
-        'When the user answers, call review_and_select_prompt again with the ' +
-          'SAME prompt/context/rewrite_level/language and `selection` set to ' +
-          '"original", "rewritten", or "cancel" depending on their choice. ' +
-          'Never pick for the user.',
-      ]
-        .filter(Boolean)
-        .join('\n');
-      return {
-        content: [{ type: 'text', text: menu }],
-        structuredContent: {
-          status: 'pending_user_selection',
-          original_prompt: original,
-          rewritten_prompt: rewritten,
-          changes_summary: changesSummary,
-          ...(warnings?.length ? { warnings } : {}),
-          available_selections: ['original', 'rewritten', 'cancel'],
-          client_elicitation_supported: supports,
-          request_id: requestId,
-        },
-      };
-    }
-
-    if (ge.kind === 'elicitation_unsupported' || ge.kind === 'invalid_input') {
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              'This client does not support interactive elicitation, or the selection was invalid. ' +
-              'The prompt was NOT forwarded. Set PROMPT_GATE_ECHO_FALLBACK=true to enable the ' +
-              'text fallback (default), or configure a client that supports MCP elicitation.',
-          },
-        ],
-        isError: true,
-        structuredContent: {
-          status: 'error',
-          error_kind: ge.kind,
-          message: ge.message,
-          selected_prompt: null,
-        },
-      };
-    }
-    return {
-      content: [{ type: 'text', text: `Elicitation error: ${ge.message}` }],
-      isError: true,
-      structuredContent: { status: 'error', error_kind: ge.kind, message: ge.message, selected_prompt: null },
-    };
-  }
-
-  log.info('review_and_select_prompt: user chose', {
-    requestId,
-    action: outcome.action,
-    chosen: outcome.action === 'accept' ? outcome.chosen : 'n/a',
-    elapsedMs: Date.now() - start,
-  });
-
-  // 4. Map to ReviewResult.
-  const result: ReviewResult =
-    outcome.action === 'cancel' || outcome.chosen === OPTION_CANCEL
-      ? { status: 'cancelled', selectedOption: 'cancel', selectedPrompt: null }
-      : outcome.chosen === OPTION_REWRITTEN
-        ? {
-            status: 'approved',
-            selectedOption: 'rewritten',
-            selectedPrompt: rewritten,
-            originalPrompt: original,
-            rewrittenPrompt: rewritten,
-          }
-        : {
-            status: 'approved',
-            selectedOption: 'original',
-            selectedPrompt: original,
-            originalPrompt: original,
-            rewrittenPrompt: rewritten,
-          };
-
-  const text =
-    result.status === 'cancelled'
-      ? 'Prompt gate: user cancelled. No prompt was approved and none was forwarded.'
-      : `Prompt gate: approved "${result.selectedOption}" prompt.\n\n${result.selectedPrompt}`;
-
-  return {
-    content: [{ type: 'text', text }],
-    structuredContent:
-      result.status === 'cancelled'
-        ? { status: 'cancelled', selected_option: 'cancel', selected_prompt: null }
-        : {
-            status: 'approved',
-            selected_option: result.selectedOption,
-            selected_prompt: result.selectedPrompt,
-            original_prompt: result.originalPrompt,
-            rewritten_prompt: result.rewrittenPrompt,
-          },
-  };
+  return await selectionLoop();
 }
 
 export function registerReviewAndSelectTool(deps: ReviewDeps): void {
@@ -547,9 +781,9 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
       title: 'Prompt Gate (user-confirmed)',
       description:
         'Generates a rewritten version of the prompt, then asks the user to ' +
-        'choose: use original, use rewritten, or cancel. Returns only the ' +
-        'approved prompt. Cancellation is a distinct outcome and never ' +
-        'exposes an approved prompt.\n' +
+        'choose: use original, use rewritten, request changes (update), or ' +
+        'cancel. Returns only the approved prompt. Cancellation is a distinct ' +
+        'outcome and never exposes an approved prompt.\n' +
         '\n' +
         'Before the rewrite, the USER chooses the enrichment level ' +
         '(`rewrite_level`: light / balanced / detailed) via an interactive ' +
@@ -561,10 +795,13 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         '\n' +
         'After the rewrite, if the client does not support MCP elicitation, ' +
         'the tool returns a distinct "pending_user_selection" result: it ' +
-        'shows both versions in plain text with the three numbered choices ' +
-        'and asks the agent to re-call this tool with `selection` set to ' +
-        'the user\'s choice ("original" / "rewritten" / "cancel"). Never ' +
-        'auto-select.\n' +
+        'shows both versions in plain text with the numbered choices and asks ' +
+        "the agent to re-call this tool with `selection` set to the user's " +
+        'choice ("original" / "rewritten" / "update" / "cancel"). Choosing ' +
+        '"update" is not final: pass the user\'s requested changes in ' +
+        '`feedback`, the tool rewrites again and returns a NEW ' +
+        '"pending_user_selection" to review. Repeat until the user picks ' +
+        'original, rewritten, or cancel. Never auto-select.\n' +
         '\n' +
         'CALLING GUIDE (for the LLM):\n' +
         '- FIRST call: pass prompt + context (+ language); do NOT pass ' +
@@ -578,7 +815,12 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         '- If a call returns status "pending_user_selection": show the two ' +
         'versions to the user, ask which to use, then call again with the ' +
         'SAME inputs PLUS `selection` set to "original", "rewritten", or ' +
-        '"cancel" matching the user\'s choice.\n' +
+        '"cancel" matching the user\'s choice. If the user wants changes ' +
+        'instead ("update"), call again with `selection: "update"` PLUS ' +
+        '`feedback` containing their requested changes (and ' +
+        '`rewritten_prompt` of the version they reviewed); the tool replies ' +
+        'with a new "pending_user_selection". Loop until the user picks ' +
+        'original, rewritten, or cancel — never decide for them.\n' +
         "- ALWAYS pass `language` set to the language of the user's original " +
         'prompt (e.g. "vietnamese"), so the rewrite stays in that language. If ' +
         'the user explicitly asks for a different output language, pass that ' +
@@ -591,6 +833,7 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         rewrite_level: ReviewAndSelectInputSchema.shape.rewrite_level,
         selection: ReviewAndSelectInputSchema.shape.selection,
         rewritten_prompt: ReviewAndSelectInputSchema.shape.rewritten_prompt,
+        feedback: ReviewAndSelectInputSchema.shape.feedback,
       },
     },
     async (rawInput) => handleReviewAndSelect(deps, rawInput)

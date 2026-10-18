@@ -1,6 +1,6 @@
 ---
 name: Review And Select Prompt
-description: Use the `review_and_select_prompt` MCP gate tool: rewrites the prompt, shows original/rewritten to the user via elicitation, and returns only the user-approved prompt. Use whenever a prompt must be confirmed by the user before it is forwarded to the model.
+description: Use the `review_and_select_prompt` MCP gate tool: rewrites the prompt, has the user pick the level and then original/rewritten/update/cancel (update loops with feedback), and returns only the user-approved prompt. Use whenever a prompt must be confirmed by the user before it is forwarded to the model.
 ---
 
 # Review And Select Prompt (the gate)
@@ -8,8 +8,10 @@ description: Use the `review_and_select_prompt` MCP gate tool: rewrites the prom
 This skill drives the **`review_and_select_prompt`** tool of the
 `universal-prompt-gate-mcp` MCP server. It is the **gate**: it rewrites the
 prompt, shows the user both the original and the rewritten version, lets the
-user pick (original / rewritten / cancel), and returns **only** the
-user-approved prompt.
+user pick (original / rewritten / update / cancel), and returns **only** the
+user-approved prompt. Choosing **update** lets the user request changes: they
+describe what to adjust and the prompt is rewritten again — the menu loops
+until they pick original, rewritten, or cancel.
 
 ## When to use
 
@@ -30,8 +32,9 @@ use the `rewrite-prompt` skill instead.
 | `context`          | yes*     | 1–3 sentences summarizing the session so far (what was asked, which files or topics are in play, what was decided). Pass it on every call; omit only for a brand-new session with no history.                                                                                                                                                                                                                                 |
 | `language`         | yes*     | **Always pass the language the user wrote their prompt in** (e.g. `"vietnamese"`, `"japanese"`), so the rewrite stays in that language. Only deviate when the user explicitly asks for a different output language — then pass that language instead. Do NOT pass `"english"` to "improve clarity" — that is a language switch, and a drift. Omit only if the language cannot be determined; the server then auto-detects it. |
 | `rewrite_level`    | no       | **Chosen by the USER, not you.** Do NOT pass it on the first call — the tool shows the user a picker with `light` / `balanced` / `detailed` (or, for clients without elicitation, returns `pending_level_selection` with a text menu). Only pass it to relay the user's explicit choice after `pending_level_selection`.                                                                                                      |
-| `selection`        | no       | **After `pending_user_selection` only:** the user's choice — `"original"` / `"rewritten"` / `"cancel"`. Never auto-select; pass it only after the user has answered.                                                                                                                                                                                                                                                          |
-| `rewritten_prompt` | no       | **Along with `selection`:** the exact rewritten text the user saw, so the user approves exactly what they read.                                                                                                                                                                                                                                                                                                               |
+| `selection`        | no       | **After `pending_user_selection` only:** the user's choice — `"original"` / `"rewritten"` / `"update"` / `"cancel"`. Never auto-select; pass it only after the user has answered.                                                                                                                                                                                                                                             |
+| `rewritten_prompt` | no       | **Along with `selection`:** the exact rewritten text the user saw, so the user approves exactly what they read; also used with `selection="update"` as the version to revise.                                                                                                                                                                                                                                                 |
+| `feedback`         | no       | **Required with `selection="update"`:** the changes the user asked for, in their own words (e.g. "make it shorter", "add acceptance criteria for X"). The tool rewrites again and returns a NEW `pending_user_selection`. Never invent feedback for the user.                                                                                                                                                                 |
 
 ## How it behaves
 
@@ -46,17 +49,24 @@ use the `rewrite-prompt` skill instead.
 2. The tool rewrites the prompt at that level (context enrichment only —
    no new intent).
 3. It shows the user **both** the original and the rewritten version:
-   - If the client supports elicitation: an interactive picker (3 options).
+   - If the client supports elicitation: an interactive picker (4 options +
+     an optional text field for requested changes).
    - If the client does NOT: a `pending_user_selection` result with both
-     versions in plain text and the three numbered choices.
-4. The user chooses one of three:
+     versions in plain text and the numbered choices.
+4. The user chooses one of four:
    - **`original`** → the original prompt is the approved result.
    - **`rewritten`** → the rewritten prompt is the approved result.
+   - **`update`** → the user wants changes. They describe them (feedback);
+     the tool rewrites the prompt again at the same level and shows the new
+     version — back to step 3. This loops until the user picks one of the
+     other three options.
    - **`cancel`** → nothing is approved.
 5. The tool returns the approved prompt — or a distinct cancellation outcome.
    When the text fallback was used, step 5 happens on a **later call**
    where you pass `selection` (plus `rewritten_prompt` if that is what was
-   chosen). That call does not re-run the LLM.
+   chosen). That call does not re-run the LLM. For `selection="update"` the
+   call DOES run the LLM once (revision round) and returns a NEW
+   `pending_user_selection` for another review.
 
 ## Expected results
 
@@ -110,15 +120,16 @@ Ask the user which level to use, then re-call with the same inputs plus
 **Pending user selection (client has no elicitation — text fallback, second step):**
 
 After the rewrite, the tool returns a distinct outcome that shows both
-versions in plain text with the three numbered choices, and instructs you
-to re-call this tool with the user's choice:
+versions in plain text with the numbered choices, and instructs you to
+re-call this tool with the user's choice:
 
 ```json
 {
   "status": "pending_user_selection",
   "original_prompt": "...",
   "rewritten_prompt": "...",
-  "available_selections": ["original", "rewritten", "cancel"]
+  "available_selections": ["original", "rewritten", "update", "cancel"],
+  "revision_count": 0
 }
 ```
 
@@ -135,6 +146,24 @@ chose the rewritten version) — that call does NOT re-run the LLM:
 }
 ```
 
+If the user chooses **update**, pass `selection: "update"` **plus**
+`feedback` with their requested changes and `rewritten_prompt` of the version
+they reviewed. That call DOES run the LLM and returns a NEW
+`pending_user_selection` (with `revision_count` bumped) to review — repeat
+until the user picks original, rewritten, or cancel:
+
+```json
+{
+  "prompt": "...(same)",
+  "context": "...(same)",
+  "language": "...(same)",
+  "rewrite_level": "balanced",
+  "selection": "update",
+  "rewritten_prompt": "...(the version the user reviewed)",
+  "feedback": "Make it shorter and add acceptance criteria for X"
+}
+```
+
 **Error (LLM failure, strict mode, ...):** a distinct error
 outcome; never a silent fallback to the original.
 
@@ -144,6 +173,11 @@ outcome; never a silent fallback to the original.
   call and never pick a level "on the user's behalf". With elicitation the
   picker enforces this; with the text fallback you must relay the user's
   explicit answer.
+- **"Update" is user-driven only.** Only pass `selection="update"` after the
+  user actually asked for changes, with their own words in `feedback`. Never
+  invent feedback, and never use "update" to nudge the rewrite yourself.
+  Keep looping (rewrite → review) until the user picks original, rewritten,
+  or cancel.
 - **Cancel is a distinct outcome.** When the user cancels, `selected_prompt`
   is `null` and **no** approved prompt is exposed. Do not forward anything.
 - **No silent fallback.** If the rewrite fails (timeout, HTTP error, empty

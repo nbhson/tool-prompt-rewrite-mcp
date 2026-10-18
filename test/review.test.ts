@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createLogger } from '../src/logger.js';
 import { handleReviewAndSelect, type ReviewDeps } from '../src/tools/reviewAndSelect.js';
-import { RewriteService } from '../src/rewrite/rewrite.js';
+import { RewriteService, buildMetaPrompt } from '../src/rewrite/rewrite.js';
 import type { LLMProvider } from '../src/llm/provider.js';
 import type { ElicitCall } from '../src/elicitation.js';
 import { MockProvider, type MockBehavior } from './fixtures/llm-mocks.js';
@@ -97,7 +97,7 @@ describe('handleReviewAndSelect', () => {
     // the selection picker comes after the rewrite.
     expect(calls.map((c) => c.step)).toEqual(['level', 'selection']);
     expect(calls[0]?.options.map((o) => o.value)).toEqual(['light', 'balanced', 'detailed']);
-    expect(calls[1]?.options.map((o) => o.value)).toEqual(['original', 'rewritten', 'cancel']);
+    expect(calls[1]?.options.map((o) => o.value)).toEqual(['original', 'rewritten', 'update', 'cancel']);
   });
 
   it('rewrites at the level the USER picked (agent-provided level is ignored when the picker works)', async () => {
@@ -210,11 +210,12 @@ describe('handleReviewAndSelect', () => {
       status: 'pending_user_selection',
       original_prompt: 'hello',
       rewritten_prompt: 'Enriched',
-      available_selections: ['original', 'rewritten', 'cancel'],
+      available_selections: ['original', 'rewritten', 'update', 'cancel'],
     });
     expect(textOf(r2)).toMatch(/\[1\] original/);
     expect(textOf(r2)).toMatch(/\[2\] rewritten/);
-    expect(textOf(r2)).toMatch(/\[3\] cancel/);
+    expect(textOf(r2)).toMatch(/\[3\] update/);
+    expect(textOf(r2)).toMatch(/\[4\] cancel/);
     expect(llmCalls).toBe(1);
 
     // Call 3 — the agent relays the user's prompt choice; no extra LLM call.
@@ -328,5 +329,214 @@ describe('handleReviewAndSelect', () => {
   it('empty prompt is rejected by Zod validation', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'x' });
     await expect(handleReviewAndSelect(deps, { prompt: '' })).rejects.toThrow();
+  });
+
+  it('selection picker offers UPDATE; update+feedback re-rewrites at the same level and loops until a final pick', async () => {
+    const calls: ElicitCall[] = [];
+    let selectionRounds = 0;
+    const stub: ElicitFn = async (call) => {
+      calls.push(call);
+      if (call.step === 'level') return { action: 'accept', chosen: 'detailed' };
+      selectionRounds += 1;
+      if (selectionRounds === 1) {
+        return { action: 'accept', chosen: 'update', feedback: 'Make it shorter' };
+      }
+      return { action: 'accept', chosen: 'rewritten' };
+    };
+    const provider = new MockProvider((messages) =>
+      messages.some((m) => m.content.includes('Make it shorter'))
+        ? { kind: 'ok', reply: 'Enriched v2' }
+        : { kind: 'ok', reply: 'Enriched v1' }
+    );
+    const deps = makeDeps({ kind: 'ok', reply: 'unused' }, stub);
+    deps.rewrite = new RewriteService(provider);
+
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toMatchObject({
+      status: 'approved',
+      selected_option: 'rewritten',
+      selected_prompt: 'Enriched v2',
+    });
+    // Two selection rounds: update first, then the final pick.
+    expect(calls.map((c) => c.step)).toEqual(['level', 'selection', 'selection']);
+    expect(calls[1]?.options.map((o) => o.value)).toEqual(['original', 'rewritten', 'update', 'cancel']);
+    // The selection form carries the optional feedback field.
+    expect(calls[1]?.feedback).toBeDefined();
+    // The revision round called the LLM with the user's feedback and the
+    // previous rewrite, and the level was kept ("detailed").
+    expect(provider.calls).toHaveLength(2);
+    const revisionMessage = provider.calls[1]?.messages.map((m) => m.content).join('\n') ?? '';
+    expect(revisionMessage).toContain('Make it shorter');
+    expect(revisionMessage).toContain('Enriched v1');
+    // The revision keeps the user-chosen level ("detailed" meta-prompt).
+    expect(provider.calls[1]?.messages[0]?.content).toBe(buildMetaPrompt('detailed'));
+  });
+
+  it('choosing UPDATE without feedback re-asks once; the next pick finalizes', async () => {
+    const selectionMessages: string[] = [];
+    let selectionRounds = 0;
+    const stub: ElicitFn = async (call) => {
+      if (call.step === 'level') return { action: 'accept', chosen: 'balanced' };
+      selectionMessages.push(call.message);
+      selectionRounds += 1;
+      if (selectionRounds === 1) return { action: 'accept', chosen: 'update' };
+      return { action: 'accept', chosen: 'original' };
+    };
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      isConfigured: () => true,
+      chat: async () => {
+        llmCalls += 1;
+        return 'Enriched';
+      },
+    };
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, stub);
+    deps.rewrite = new RewriteService(provider);
+
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' });
+    expect(res.structuredContent).toMatchObject({ status: 'approved', selected_option: 'original' });
+    expect(selectionRounds).toBe(2);
+    expect(selectionMessages[1]).toMatch(/did not describe the changes/);
+    expect(llmCalls).toBe(1); // only the first rewrite; no revision was triggered
+  });
+
+  it('choosing UPDATE without feedback twice → invalid_input error (no infinite loop)', async () => {
+    let selectionRounds = 0;
+    const stub: ElicitFn = async (call) => {
+      if (call.step === 'level') return { action: 'accept', chosen: 'balanced' };
+      selectionRounds += 1;
+      return { action: 'accept', chosen: 'update' };
+    };
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      isConfigured: () => true,
+      chat: async () => {
+        llmCalls += 1;
+        return 'Enriched';
+      },
+    };
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, stub);
+    deps.rewrite = new RewriteService(provider);
+
+    const res = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      selected_prompt: null,
+    });
+    expect(selectionRounds).toBe(2);
+    expect(llmCalls).toBe(1); // only the first rewrite
+  });
+
+  it('echo fallback: relayed selection="update" + feedback rewrites again and returns a NEW pending_user_selection (loop)', async () => {
+    const provider = new MockProvider((messages) =>
+      messages.some((m) => m.content.includes('Keep it short'))
+        ? { kind: 'ok', reply: 'Short version' }
+        : { kind: 'ok', reply: 'Enriched' }
+    );
+    const deps = makeDeps({ kind: 'ok', reply: 'unused' }, elicitationUnsupported());
+    deps.rewrite = new RewriteService(provider);
+
+    // Call 1: level menu (no LLM).
+    const r1 = await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' });
+    expect(r1.structuredContent).toMatchObject({ status: 'pending_level_selection' });
+
+    // Call 2: relayed level → first rewrite + selection menu.
+    const r2 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+    });
+    expect(r2.structuredContent).toMatchObject({
+      status: 'pending_user_selection',
+      rewritten_prompt: 'Enriched',
+      available_selections: ['original', 'rewritten', 'update', 'cancel'],
+      revision_count: 0,
+    });
+
+    // Call 3: relayed update + feedback → revised rewrite + NEW menu.
+    const r3 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+      selection: 'update',
+      feedback: 'Keep it short',
+      rewritten_prompt: 'Enriched',
+    });
+    expect(r3.isError).toBeFalsy();
+    expect(r3.structuredContent).toMatchObject({
+      status: 'pending_user_selection',
+      rewritten_prompt: 'Short version',
+      revision_count: 1,
+      available_selections: ['original', 'rewritten', 'update', 'cancel'],
+    });
+    expect(textOf(r3)).toMatch(/Revised 1 time/);
+
+    // Call 4: final pick → approved; no further LLM call.
+    const r4 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+      selection: 'rewritten',
+      rewritten_prompt: 'Short version',
+    });
+    expect(r4.structuredContent).toMatchObject({ status: 'approved', selected_prompt: 'Short version' });
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('echo fallback: relayed selection="update" without feedback → invalid_input error, no LLM call', async () => {
+    let llmCalls = 0;
+    const provider: LLMProvider = {
+      isConfigured: () => true,
+      chat: async () => {
+        llmCalls += 1;
+        return 'x';
+      },
+    };
+    const deps = makeDeps({ kind: 'ok', reply: 'x' }, elicitationUnsupported());
+    deps.rewrite = new RewriteService(provider);
+
+    const res = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+      selection: 'update',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      message: 'feedback is required when selection="update"',
+      selected_prompt: null,
+    });
+    expect(llmCalls).toBe(0);
+  });
+
+  it('echo fallback: update relay without rewrite_level falls back to "balanced"', async () => {
+    const provider = new MockProvider((messages) =>
+      messages.some((m) => m.content.includes('add criteria'))
+        ? { kind: 'ok', reply: 'Revised' }
+        : { kind: 'ok', reply: 'Enriched' }
+    );
+    const deps = makeDeps({ kind: 'ok', reply: 'unused' }, elicitationUnsupported());
+    deps.rewrite = new RewriteService(provider);
+
+    const res = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      selection: 'update',
+      feedback: 'add criteria',
+      rewritten_prompt: 'Enriched',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toMatchObject({
+      status: 'pending_user_selection',
+      rewritten_prompt: 'Revised',
+    });
+    // No rewrite_level relayed → the revision keeps the documented default level.
+    expect(provider.calls[0]?.messages[0]?.content).toBe(buildMetaPrompt('balanced'));
   });
 });

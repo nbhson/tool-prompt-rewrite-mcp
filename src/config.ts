@@ -81,8 +81,9 @@ const DEFAULTS = {
   maxTokens: 2048,
   temperature: 0.2,
   provider: 'openai-compatible' as const,
-  // When the client does not support elicitation, render the 3 choices in
-  // text and let the agent re-call with the user's selection.
+  // When the client does not support elicitation, render the choices in
+  // text and let the agent re-call with the user's selection (or feedback
+  // for the "update" loop).
   echoFallback: true,
 };
 

@@ -11,11 +11,11 @@ in what order**, so prompts are enriched and approved safely.
 
 The three tools:
 
-| Tool                       | Role                                                           | Asks the user? |
-| -------------------------- | -------------------------------------------------------------- | -------------- |
-| `get_client_capabilities`  | Reports what the connected client can do (elicitation, ...)    | No             |
-| `review_and_select_prompt` | **Gate**: user picks the level, then original/rewritten/cancel | **Yes**        |
-| `rewrite_prompt`           | Rewrite only (candidate, no approval)                          | No             |
+| Tool                       | Role                                                                  | Asks the user? |
+| -------------------------- | --------------------------------------------------------------------- | -------------- |
+| `get_client_capabilities`  | Reports what the connected client can do (elicitation, ...)           | No             |
+| `review_and_select_prompt` | **Gate**: user picks the level, then original/rewritten/update/cancel | **Yes**        |
+| `rewrite_prompt`           | Rewrite only (candidate, no approval)                                 | No             |
 
 ## Decision flow
 
@@ -34,12 +34,16 @@ The three tools:
    │        │          their choice. The prompt has NOT been rewritten yet.
    │        ├─ status = "pending_user_selection"
    │        │        (client has no elicitation; text fallback is on)
-   │        │        → show the two versions + the 3 numbered choices to
-   │        │          the user. When the user answers, re-call
-   │        │          review_and_select_prompt with `selection` set to
-   │        │          "original"/"rewritten"/"cancel" (and
-   │        │          `rewritten_prompt` if that was chosen). That call
-   │        │          does not re-run the LLM.
+   │        │        → show the 4 numbered choices (original / rewritten /
+   │        │          update / cancel) to the user. When the user answers:
+   │        │          · original/rewritten/cancel → re-call with
+   │        │            `selection` (+ `rewritten_prompt` if chosen); that
+   │        │            call does not re-run the LLM.
+   │        │          · update → the user described changes: re-call with
+   │        │            `selection: "update"` + `feedback` (their words)
+   │        │            + `rewritten_prompt`; the tool rewrites again and
+   │        │            returns a NEW "pending_user_selection". Loop until
+   │        │            the user picks original, rewritten, or cancel.
    │        └─ status = "error"
    │                 → do NOT fall back to the original; report the error.
    │
@@ -49,12 +53,15 @@ The three tools:
 
 > **Note on elicitation:** the gate tool works with or without client
 > elicitation support. With elicitation, the user picks the rewrite level
-> (light/balanced/detailed) in a first picker, then original/rewritten/cancel
-> in a second one — all inside a single tool call. When the client has no
+> (light/balanced/detailed) in a first picker, then original/rewritten/update/
+> cancel in a second one (choosing "update" lets them type requested changes
+> and the tool rewrites again + re-shows the picker — all inside a single
+> tool call). When the client has no
 > elicitation, the server's **text fallback** (`PROMPT_GATE_ECHO_FALLBACK=true`,
 > the default) returns `pending_level_selection` first (ask the user, re-call
 > with `rewrite_level`) and then `pending_user_selection` (ask the user,
-> re-call with `selection`). Only when the fallback is disabled
+> re-call with `selection`, plus `feedback` for update). Only when the
+> fallback is disabled
 > (`PROMPT_GATE_ECHO_FALLBACK=false`) does a non-eliciting client get a hard
 > compatibility error — in that case, prefer `rewrite_prompt` or surface the
 > limitation to the user.
@@ -72,8 +79,8 @@ Call `get_client_capabilities` (no input). Read:
 If `elicitation_supported` is `false` and the text fallback is enabled
 (the default), the gate still works: the tool returns
 `pending_level_selection` (level menu) and later `pending_user_selection`
-(original/rewritten/cancel menu), and you complete it with follow-up calls
-carrying `rewrite_level` / `selection`. Only when
+(original/rewritten/update/cancel menu), and you complete it with follow-up
+calls carrying `rewrite_level` / `selection` / `feedback`. Only when
 `PROMPT_GATE_ECHO_FALLBACK=false` does a non-eliciting client get a hard
 compatibility error — never pretend a normal tool response is an interactive
 confirmation.
@@ -99,8 +106,12 @@ Then branch on the result:
 - `status: "cancelled"` → stop; `selected_prompt` is `null`; forward nothing.
 - `status: "pending_level_selection"` → ask the user for the level; re-call
   with `rewrite_level` set to their choice (same prompt/context/language).
-- `status: "pending_user_selection"` → ask the user which version to use;
-  re-call with `selection` (+ `rewritten_prompt` if chosen).
+- `status: "pending_user_selection"` → ask the user which option to use;
+  re-call with `selection` (+ `rewritten_prompt` if chosen). If the user
+  wants changes ("update"), re-call with `selection: "update"` + `feedback`
+  containing their requested changes (never invent it); the tool rewrites
+  again and returns a new `pending_user_selection` — loop until the user
+  picks original, rewritten, or cancel.
 - error outcome → do not fall back to the original; report the error.
 
 ### Preview (no gate)
@@ -115,6 +126,9 @@ required.
   session summary in `context` so the result is grounded.
 - **The user chooses the level.** Never pick `rewrite_level` for the user in
   the gate flow; relay their explicit choice.
+- **"Update" is user-driven only.** Only relay `selection="update"` with the
+  user's own feedback; never invent changes or use it to polish the rewrite
+  yourself.
 - **Enrichment only, no new intent.** Neither tool adds requirements the
   user did not ask for.
 - **Cancel ≠ approved.** A cancelled gate exposes no prompt.

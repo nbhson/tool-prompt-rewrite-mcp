@@ -59,18 +59,24 @@ export type ReviewResult =
        * fallback (echo fallback) is enabled. `originalPrompt` /
        * `rewrittenPrompt` are BOTH exposed so the user can compare; the
        * agent must re-call the tool with `selection` after the user picks.
+       *
+       * `update` keeps the loop going: the agent re-calls with
+       * `selection: 'update'` PLUS `feedback` (the changes the user asked
+       * for); the tool rewrites again and returns a NEW
+       * `pending_user_selection`. The loop ends only when the user picks
+       * `original`, `rewritten`, or `cancel`.
        */
       status: 'pending_user_selection';
       originalPrompt: string;
       rewrittenPrompt: string;
       changesSummary: string;
       warnings?: string[];
-      /** The three valid values the agent may pass on the next call. */
-      availableSelections: ['original', 'rewritten', 'cancel'];
+      /** The valid values the agent may pass on the next call. */
+      availableSelections: ['original', 'rewritten', 'update', 'cancel'];
     };
 
 /** The user's explicit choice, used on the re-invocation of the gate tool. */
-export type PromptSelection = 'original' | 'rewritten' | 'cancel';
+export type PromptSelection = 'original' | 'rewritten' | 'update' | 'cancel';
 
 /** Errors that should be returned as data (not thrown across the MCP boundary). */
 export type GateErrorKind =
@@ -80,6 +86,7 @@ export type GateErrorKind =
   | 'llm_malformed_output'
   | 'elicitation_unsupported'
   | 'elicitation_declined'
+  | 'revision_limit'
   | 'cancelled'
   | 'unknown';
 

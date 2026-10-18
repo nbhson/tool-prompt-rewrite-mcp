@@ -26,6 +26,17 @@ export interface RewriteOptions {
   language?: string;
   context?: string;
   /**
+   * User feedback requesting changes to a previous rewrite (the gate's
+   * "update" option). When set, the LLM revises `previousRewrite` instead
+   * of rewriting from scratch.
+   */
+  feedback?: string;
+  /**
+   * The previous rewrite being revised when `feedback` is set. Optional:
+   * if absent the feedback is applied to a fresh rewrite of the prompt.
+   */
+  previousRewrite?: string;
+  /**
    * Optional path to a custom meta-prompt policy file (markdown or plain
    * text). When provided, its content replaces the built-in META_PROMPTS
    * for the level. This is the extension point for `PROMPT_GATE_REWRITE_POLICY_FILE`.
@@ -166,6 +177,7 @@ export class RewriteService {
 
     const parts: string[] = [`"${level}" enrichment level`];
     if (opts.context && opts.context.trim().length > 0) parts.push('user context applied');
+    if (opts.feedback?.trim()) parts.push('user-requested revision applied');
     if (explicitLanguage) parts.push(`output language: ${explicitLanguage}`);
     else if (detected !== 'unknown') parts.push(`language auto-detected: ${languageHint(detected)}`);
     if (policyFile) parts.push('custom policy file');
@@ -203,6 +215,31 @@ function buildUserMessage(prompt: string, opts: RewriteOptions): string {
     const hint = detected === 'unknown' ? 'the original language of the prompt' : languageHint(detected);
     parts.push('');
     parts.push(`Output language: keep ${hint}. Do not switch to another language.`);
+  }
+
+  // Revision round: the user reviewed a previous rewrite and asked for
+  // changes (the gate's "update" option). Apply the feedback to the
+  // previous rewrite instead of starting over.
+  const feedback = opts.feedback?.trim();
+  if (feedback) {
+    const previous = opts.previousRewrite?.trim();
+    if (previous) {
+      parts.push('');
+      parts.push('Previous rewrite (revise this; do not start over):');
+      parts.push('---');
+      parts.push(previous);
+      parts.push('---');
+    }
+    parts.push('');
+    parts.push('The user reviewed the previous rewrite and requested these changes:');
+    parts.push('---');
+    parts.push(feedback);
+    parts.push('---');
+    parts.push(
+      'Apply the requested changes to the previous rewrite and keep everything else ' +
+        'intact. Do not add requirements beyond the original prompt and the requested ' +
+        'changes. Return only the revised prompt.'
+    );
   }
 
   return parts.join('\n');

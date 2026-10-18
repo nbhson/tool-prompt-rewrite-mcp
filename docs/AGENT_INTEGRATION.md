@@ -141,7 +141,9 @@ the agent has a hook to force the gate on every prompt.
 3. In the Inspector, call `get_client_capabilities` first. Confirm
    `elicitation_supported: true` for the client you are using.
 4. Call `review_and_select_prompt` with a short prompt and walk through the
-   elicitation UI (original / rewritten / cancel).
+   elicitation UI (original / rewritten / update / cancel; "update" lets you
+   type requested changes and the prompt is rewritten again — the loop ends
+   at original / rewritten / cancel).
 5. Verify that a cancel produces `status: "cancelled"` and no
    `selected_prompt` is returned.
 

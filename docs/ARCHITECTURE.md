@@ -1,6 +1,6 @@
 # Universal Prompt Gate MCP Server — Kiến trúc tổng thể
 
-> Một MCP server độc lập, hoạt động với nhiều coding agent, giúp người dùng xem xét và chọn prompt trước khi được gửi đến LLM. Hỗ trợ viết lại prompt bằng LLM local, cho user chọn mức enrich rồi hiển thị 3 lựa chọn (gốc / đã sửa / hủy) và đảm bảo an toàn, linh hoạt cho agent.
+> Một MCP server độc lập, hoạt động với nhiều coding agent, giúp người dùng xem xét và chọn prompt trước khi được gửi đến LLM. Hỗ trợ viết lại prompt bằng LLM local, cho user chọn mức enrich rồi hiển thị 4 lựa chọn (gốc / đã sửa / cập nhật / hủy — "cập nhật" cho user nhập yêu cầu chỉnh sửa và loop) và đảm bảo an toàn, linh hoạt cho agent.
 
 ![Kiến trúc tổng thể](Universal Prompt Gate MCP Architecture.png)
 
@@ -92,14 +92,15 @@ Rewrite chạy bằng **LLM local nhỏ** (qwen3.5-9b), tách hoàn toàn khỏi
 
 ### D. User Interaction Layer (Lớp tương tác người dùng)
 
-- **MCP Elicitation** — bước 1: màn chọn mức enrich (`light` / `balanced` / `detailed`) — **user bắt buộc chọn**, agent không được chọn hộ. Bước 2: hiển thị 3 lựa chọn prompt.
+- **MCP Elicitation** — bước 1: màn chọn mức enrich (`light` / `balanced` / `detailed`) — **user bắt buộc chọn**, agent không được chọn hộ. Bước 2: hiển thị 4 lựa chọn prompt (gốc / đã sửa / cập nhật / hủy).
 - **Prompt Review:**
   - _Original:_ "thông tin việt nam"
   - _Rewritten:_ "Tóm tắt những tin tức mới nhất về Việt Nam hôm nay, phân loại theo kinh tế, chính trị, xã hội và công nghệ. Ưu tiên nguồn tin đáng tin cậy."
-- **3 lựa chọn (khung):**
+- **4 lựa chọn (khung):**
   1. `Dùng prompt gốc` (màu xanh dương)
   2. `Dùng prompt đã viết lại` (màu xanh lá)
-  3. `Hủy` (màu đỏ)
+  3. `Cập nhật / yêu cầu chỉnh sửa` — user nhập feedback; prompt được viết lại theo feedback (cùng level) rồi hiển thị lại menu (loop tới khi chọn 1 trong 3 lựa chọn còn lại)
+  4. `Hủy` (màu đỏ)
 - Nhận và xử lý lựa chọn
 
 ### E. LLM Local (llama.cpp)
@@ -143,9 +144,10 @@ flowchart TD
     RM{"LLM ok?"}
     RE["Trả về error<br/>(<b>không</b> silent fallback)"]
     E["Hiển thị ORIGINAL &amp; REWRITTEN<br/>qua elicitation"]
-    CHOICE{"User chọn 1 trong 3"}
+    CHOICE{"User chọn 1 trong 4"}
     O1["Use original"]
     O2["Use rewritten"]
+    O4["Update<br/>(nhập feedback chỉnh sửa)"]
     O3["Cancel"]
   end
 
@@ -166,7 +168,9 @@ flowchart TD
   E -->|6. elicitation| CHOICE
   CHOICE -->|7a| O1
   CHOICE -->|7b| O2
+  CHOICE -->|7d| O4
   CHOICE -->|7c| O3
+  O4 -->|"8d. feedback → rewrite lại (loop)"| R
   O1 -->|8a. approved| A3
   O2 -->|8b. approved| A3
   O3 -->|8c. cancelled| A3
@@ -184,8 +188,8 @@ Coding Agent → MCP Server → LLM Provider (llama.cpp)
    2. User chọn mức enrich (light / balanced / detailed) qua elicitation — bắt buộc
    3. Gọi LLM để viết lại prompt theo mức đã chọn
    4. Trả về bản gốc & bản đã sửa (via elicitation)
-   5. Hiển thị 3 lựa chọn (1/2/3)
-   6. User chọn (1/2/3)
+   5. Hiển thị 4 lựa chọn (1/2/3/4)
+   6. User chọn (1/2/3/4) — chọn "cập nhật" (3) để nhập yêu cầu chỉnh sửa; prompt được viết lại và quay lại bước 3 (loop)
    7. Trả về prompt đã chọn (hoặc hủy)
    8. Gửi prompt đến agent (hoặc dừng nếu hủy)
 ```
@@ -201,7 +205,7 @@ Agent Hook / Integration (hoặc MCP + Hook) thực thi:
 3. **Bên trong MCP Server (Process):**
    - User chọn mức enrich (light / balanced / detailed) — qua elicitation
    - Viết lại prompt theo mức đã chọn (llama.cpp)
-   - Hiển thị lựa chọn (elicitation)
+   - Hiển thị lựa chọn (elicitation): gốc / đã sửa / cập nhật / hủy — "cập nhật" cho user nhập feedback và loop viết lại
    - Người dùng lựa chọn & xác nhận
    - Trả về kết quả (hoặc hủy)
 4. `Gửi prompt đã chọn (hoặc dừng)`
@@ -262,6 +266,9 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
   - `language?: string`
   - `context?: string`
   - `rewrite_level?: "light" | "balanced" | "detailed"` — **user chọn qua picker** (agent không được chọn hộ; chỉ relay sau `pending_level_selection` khi client không có elicitation)
+  - `selection?: "original" | "rewritten" | "update" | "cancel"` — relay lựa chọn của user sau `pending_user_selection` (text fallback); `"update"` KHÔNG phải lựa chọn cuối
+  - `rewritten_prompt?: string` — bản rewritten user đã xem (dùng khi `selection="rewritten"` để approve đúng bản user đọc, và khi `selection="update"` làm bản gốc để revise)
+  - `feedback?: string` — **bắt buộc khi `selection="update"`**: yêu cầu chỉnh sửa của user (nguyên văn); tool viết lại theo feedback rồi trả về `pending_user_selection` MỚI (loop)
 - **Output khi approve:**
   ```json
   {
@@ -285,11 +292,12 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
   2. Yêu cầu **user** chọn mức enrich (`light` / `balanced` / `detailed`) qua elicitation — agent không được chọn hộ
   3. Sinh rewritten prompt theo mức đã chọn
   4. Hiển thị cả 2 bản qua MCP elicitation (nếu client hỗ trợ)
-  5. Yêu cầu user chọn **chính xác 1**
-  6. Return **chỉ** prompt approved + decision metadata
-  7. Xử lý explicit: cancel, client không support elicitation (trả clear compatibility error / fallback text đã cấu hình — `pending_level_selection` → `pending_user_selection`)
-  8. **Không** silent fallback sang original sau error
-  9. **Không** auto-select sau timeout
+  5. Yêu cầu user chọn **chính xác 1**: gốc / đã sửa / cập nhật / hủy
+  6. Nếu user chọn `update`: nhận `feedback` (không được rỗng), viết lại prompt theo feedback (giữ nguyên level), hiển thị lại bước 4–5 — loop tới khi user chọn gốc / đã sửa / hủy (giới hạn an toàn 25 vòng/call, `error_kind=revision_limit`)
+  7. Return **chỉ** prompt approved + decision metadata
+  8. Xử lý explicit: cancel, client không support elicitation (trả clear compatibility error / fallback text đã cấu hình — `pending_level_selection` → `pending_user_selection`; relay `selection="update"` + `feedback` sẽ rewrite và trả `pending_user_selection` mới)
+  9. **Không** silent fallback sang original sau error
+  10. **Không** auto-select sau timeout
 
 ### `get_client_capabilities`
 
@@ -305,20 +313,20 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
 
 ## 5. Biến môi trường quan trọng
 
-| Biến                              | Default                                                | Vai trò                                                                                                                                                                                                 |
-| --------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)                                                                                                                                                                        |
-| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model LLM                                                                                                                                                                                           |
-| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local)                                                                                                                                                                                         |
-| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                               | Timeout (ms) cho LLM                                                                                                                                                                                    |
-| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                    | Retry tối đa (network)                                                                                                                                                                                  |
-| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Completion tokens tối đa                                                                                                                                                                                |
-| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | Bật/tắt reasoning (thinking models)                                                                                                                                                                     |
-| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào body LLM                                                                                                                                                                            |
-| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                 | Client không support elicitation → gate trả `pending_level_selection` / `pending_user_selection` (fallback text; agent re-call với `rewrite_level` / `selection`) thay vì error (set `false` để strict) |
-| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | Chế độ transport                                                                                                                                                                                        |
-| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud                                                                                                                                                                            |
-| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset)                                                                                                                                                                     |
+| Biến                              | Default                                                | Vai trò                                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROMPT_GATE_LLM_BASE_URL`        | `http://127.0.0.1:8080/v1`                             | Endpoint LLM (OpenAI-compatible)                                                                                                                                                                                     |
+| `PROMPT_GATE_LLM_MODEL`           | `qwen3.5-9b` _(ví dụ — verify theo llama.cpp version)_ | Tên model LLM                                                                                                                                                                                                        |
+| `PROMPT_GATE_LLM_API_KEY`         | `local-dev-key`                                        | API key (local)                                                                                                                                                                                                      |
+| `PROMPT_GATE_TIMEOUT_MS`          | `180000`                                               | Timeout (ms) cho LLM                                                                                                                                                                                                 |
+| `PROMPT_GATE_LLM_RETRY_MAX`       | `3`                                                    | Retry tối đa (network)                                                                                                                                                                                               |
+| `PROMPT_GATE_LLM_MAX_TOKENS`      | `2048`                                                 | Completion tokens tối đa                                                                                                                                                                                             |
+| `PROMPT_GATE_LLM_ENABLE_THINKING` | _(unset)_                                              | Bật/tắt reasoning (thinking models)                                                                                                                                                                                  |
+| `PROMPT_GATE_LLM_EXTRA_JSON`      | _(unset)_                                              | JSON object gộp vào body LLM                                                                                                                                                                                         |
+| `PROMPT_GATE_ECHO_FALLBACK`       | `true`                                                 | Client không support elicitation → gate trả `pending_level_selection` / `pending_user_selection` (fallback text; agent re-call với `rewrite_level` / `selection` / `feedback`) thay vì error (set `false` để strict) |
+| `PROMPT_GATE_TRANSPORT`           | `stdio`                                                | Chế độ transport                                                                                                                                                                                                     |
+| `PROMPT_GATE_EXTERNAL_LLM`        | _(unset)_                                              | Optional: endpoint LLM cloud                                                                                                                                                                                         |
+| `PROMPT_GATE_REWRITE_POLICY_FILE` | _(unset)_                                              | File meta-prompt tùy chỉnh (preset)                                                                                                                                                                                  |
 
 > **Tách 2 trục:** `rewrite_level` (per-call: trong gate flow do **user chọn** qua picker; trong `rewrite_prompt` do agent chọn: `light`/`balanced`/`detailed`) ≠ `PROMPT_GATE_REWRITE_POLICY_FILE` (global default meta-prompt preset).
 
@@ -331,7 +339,7 @@ User chọn Cancel → MCP Server xác nhận hủy → Không gọi gửi promp
 - **Không silent fallback**: sau LLM error, **không** auto-chọn original — trả về lỗi rõ ràng
 - **Không auto-select sau timeout**: user phải chọn thủ công
 - **Cancel = distinct protocol outcome**: response `status=cancelled`, **không** expose approved prompt
-- **Echo fallback (client không support elicitation)**: trả về `pending_level_selection` (menu chọn mức, chưa rewrite) rồi `pending_user_selection` (menu 3 lựa chọn dạng text); agent phải re-call tool với `rewrite_level` / `selection` do **user** chọn — không auto-select, không auto-forward. Bật/tắt qua `PROMPT_GATE_ECHO_FALLBACK`
+- **Echo fallback (client không support elicitation)**: trả về `pending_level_selection` (menu chọn mức, chưa rewrite) rồi `pending_user_selection` (menu 4 lựa chọn dạng text, kèm `revision_count`); agent phải re-call tool với `rewrite_level` / `selection` / `feedback` do **user** chọn — không auto-select, không auto-forward. `selection="update"` + `feedback` sẽ rewrite lại và trả `pending_user_selection` mới (loop). Bật/tắt qua `PROMPT_GATE_ECHO_FALLBACK`
 - Phát hiện injection; treat prompt as untrusted data
 - Quản lý session; **isolation per session/request ID**; cleanup abandoned requests
 - Không log prompt đầy đủ; redact secrets trong log; không placeholder credentials
