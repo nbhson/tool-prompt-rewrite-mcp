@@ -4,6 +4,10 @@ import tsparser from '@typescript-eslint/parser';
 import prettier from 'eslint-config-prettier';
 
 export default [
+  // Ignore generated output and project files not part of source
+  {
+    ignores: ['build/**/*', 'scripts/**/*', 'node_modules/**/*'],
+  },
   js.configs.recommended,
   {
     files: ['**/*.ts'],

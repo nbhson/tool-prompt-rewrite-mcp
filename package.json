@@ -50,7 +50,7 @@
     "url": "git+https://github.com/nbhson/tool-prompt-rewrite-mcp.git"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.3.5"
   },
   "devDependencies": {
@@ -63,6 +63,7 @@
     "prettier": "^3.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^3.0.0"
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
   }
 }
