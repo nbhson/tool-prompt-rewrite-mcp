@@ -29,6 +29,7 @@ import { detectCapabilities, type ClientCapabilities } from './capability/capabi
 import { registerAllTools } from './tools/index.js';
 import { SessionManager } from './session/session.js';
 import { loadEnvFile } from './env.js';
+import { SERVER_NAME, SERVER_VERSION } from './version.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,7 +66,7 @@ export async function buildServer(configOverride?: Parameters<typeof loadConfig>
   const sessionId = sessions.newSession();
 
   const server = new McpServer(
-    { name: 'universal-prompt-gate-mcp', version: '0.1.0' },
+    { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } }
   );
 
