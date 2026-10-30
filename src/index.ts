@@ -27,7 +27,6 @@ import { createLogger, type Logger } from './logger.js';
 import { createProvider } from './llm/index.js';
 import { detectCapabilities, type ClientCapabilities } from './capability/capability.js';
 import { registerAllTools } from './tools/index.js';
-import { SessionManager } from './session/session.js';
 import { loadEnvFile } from './env.js';
 import { SERVER_NAME, SERVER_VERSION } from './version.js';
 import { existsSync } from 'node:fs';
@@ -36,7 +35,6 @@ import { fileURLToPath } from 'node:url';
 
 export interface ServerHandle {
   server: McpServer;
-  sessions: SessionManager;
   log: Logger;
 }
 
@@ -49,8 +47,6 @@ function findEnvFile(cwd: string, scriptDir: string): string {
   if (explicit && existsSync(explicit)) return explicit;
   const cwdFile = join(cwd, '.env');
   if (existsSync(cwdFile)) return cwdFile;
-  const scriptFile = join(scriptDir, '..', '.env');
-  if (existsSync(scriptFile)) return scriptFile;
   return join(scriptDir, '..', '.env'); // last resort; loadEnvFile no-ops if absent
 }
 
@@ -62,8 +58,6 @@ export async function buildServer(configOverride?: Parameters<typeof loadConfig>
   const cfg = loadConfig(configOverride);
   const log = createLogger(cfg.logLevel);
   const llm = await createProvider(cfg.llm);
-  const sessions = new SessionManager();
-  const sessionId = sessions.newSession();
 
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -78,7 +72,6 @@ export async function buildServer(configOverride?: Parameters<typeof loadConfig>
   // initialized, elicitation flips on without a server restart.
   const caps = {
     current: detectCapabilities({}),
-    sessionId,
   };
 
   const detect = (): ClientCapabilities => {
@@ -107,7 +100,7 @@ export async function buildServer(configOverride?: Parameters<typeof loadConfig>
     provider: cfg.llm.provider,
   });
 
-  return { server, sessions, log };
+  return { server, log };
 }
 
 async function main(): Promise<void> {

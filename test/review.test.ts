@@ -212,6 +212,8 @@ describe('handleReviewAndSelect', () => {
       rewritten_prompt: 'Enriched',
       available_selections: ['original', 'rewritten', 'update', 'cancel'],
     });
+    const reviewId = (r2.structuredContent as Record<string, unknown>)['review_id'];
+    expect(typeof reviewId).toBe('string');
     expect(textOf(r2)).toMatch(/\[1\] original/);
     expect(textOf(r2)).toMatch(/\[2\] rewritten/);
     expect(textOf(r2)).toMatch(/\[3\] update/);
@@ -223,6 +225,7 @@ describe('handleReviewAndSelect', () => {
       prompt: 'hello',
       context: 'test session',
       rewrite_level: 'balanced',
+      review_id: reviewId as string,
       selection: 'rewritten',
       rewritten_prompt: 'Enriched',
     });
@@ -250,7 +253,20 @@ describe('handleReviewAndSelect', () => {
     expect(textOf(res)).toMatch(/does not support interactive elicitation/i);
   });
 
-  it('re-call with selection="rewritten" → approves the passed rewritten_prompt, no LLM re-call', async () => {
+  /** Drive the gate to a pending_user_selection and return its review_id. */
+  async function startPendingFlow(deps: ReviewDeps, prompt = 'hello'): Promise<string> {
+    await handleReviewAndSelect(deps, { prompt, context: 'test session' }); // → pending_level_selection
+    const r = await handleReviewAndSelect(deps, {
+      prompt,
+      context: 'test session',
+      rewrite_level: 'balanced',
+    }); // → pending_user_selection
+    const reviewId = (r.structuredContent as Record<string, unknown>)['review_id'];
+    if (typeof reviewId !== 'string') throw new Error('no review_id in pending response');
+    return reviewId;
+  }
+
+  it('re-call with selection="rewritten" + review_id → approves the STORED rewritten prompt, no LLM re-call', async () => {
     let llmCalls = 0;
     const provider = {
       isConfigured: () => true,
@@ -259,11 +275,14 @@ describe('handleReviewAndSelect', () => {
         throw new Error('must not be called');
       },
     } as unknown as LLMProvider;
-    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' });
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+    const reviewId = await startPendingFlow(deps);
+    // From here on, any LLM call is a bug: approval must reuse the stored text.
     deps.rewrite = new RewriteService(provider);
     const res = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'test session',
+      review_id: reviewId,
       selection: 'rewritten',
       rewritten_prompt: 'Enriched',
     });
@@ -278,11 +297,65 @@ describe('handleReviewAndSelect', () => {
     });
   });
 
-  it('re-call with selection="original" → approves the original prompt', async () => {
+  it('re-call with selection="rewritten" but a TAMPERED rewritten_prompt → rejected, nothing approved', async () => {
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+    const reviewId = await startPendingFlow(deps);
+    const res = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'test session',
+      review_id: reviewId,
+      selection: 'rewritten',
+      rewritten_prompt: 'Malicious substitution',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      selected_prompt: null,
+    });
+  });
+
+  it('re-call with selection but WITHOUT review_id → rejected (integrity requirement)', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
     const res = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'test session',
+      selection: 'rewritten',
+      rewritten_prompt: 'Enriched',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      message: 'selection requires a valid review_id from a pending_user_selection',
+      selected_prompt: null,
+    });
+  });
+
+  it('re-call with an UNKNOWN review_id → rejected', async () => {
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+    await startPendingFlow(deps); // create a live review; we use a different id below
+    const res = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'test session',
+      review_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      selection: 'original',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      selected_prompt: null,
+    });
+  });
+
+  it('re-call with selection="original" + review_id → approves the original prompt', async () => {
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+    const reviewId = await startPendingFlow(deps);
+    const res = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'test session',
+      review_id: reviewId,
       selection: 'original',
     });
     expect(res.isError).toBeFalsy();
@@ -293,11 +366,13 @@ describe('handleReviewAndSelect', () => {
     });
   });
 
-  it('re-call with selection="cancel" → cancelled outcome, no approved prompt', async () => {
+  it('re-call with selection="cancel" + review_id → cancelled outcome, no approved prompt', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+    const reviewId = await startPendingFlow(deps);
     const res = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'test session',
+      review_id: reviewId,
       selection: 'cancel',
     });
     expect(res.isError).toBeFalsy();
@@ -326,9 +401,15 @@ describe('handleReviewAndSelect', () => {
     });
   });
 
-  it('empty prompt is rejected by Zod validation', async () => {
+  it('empty prompt → invalid_input error response (no throw across the MCP boundary)', async () => {
     const deps = makeDeps({ kind: 'ok', reply: 'x' });
-    await expect(handleReviewAndSelect(deps, { prompt: '' })).rejects.toThrow();
+    const res = await handleReviewAndSelect(deps, { prompt: '' });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      selected_prompt: null,
+    });
   });
 
   it('selection picker offers UPDATE; update+feedback re-rewrites at the same level and loops until a final pick', async () => {
@@ -458,10 +539,12 @@ describe('handleReviewAndSelect', () => {
     });
 
     // Call 3: relayed update + feedback → revised rewrite + NEW menu.
+    const r2ReviewId = (r2.structuredContent as Record<string, unknown>)['review_id'] as string;
     const r3 = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'ctx',
       rewrite_level: 'balanced',
+      review_id: r2ReviewId,
       selection: 'update',
       feedback: 'Keep it short',
       rewritten_prompt: 'Enriched',
@@ -476,10 +559,13 @@ describe('handleReviewAndSelect', () => {
     expect(textOf(r3)).toMatch(/Revised 1 time/);
 
     // Call 4: final pick → approved; no further LLM call.
+    const r3ReviewId = (r3.structuredContent as Record<string, unknown>)['review_id'] as string;
+    expect(r3ReviewId).not.toBe(r2ReviewId); // each pending round gets its own id
     const r4 = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'ctx',
       rewrite_level: 'balanced',
+      review_id: r3ReviewId,
       selection: 'rewritten',
       rewritten_prompt: 'Short version',
     });
@@ -499,10 +585,19 @@ describe('handleReviewAndSelect', () => {
     const deps = makeDeps({ kind: 'ok', reply: 'x' }, elicitationUnsupported());
     deps.rewrite = new RewriteService(provider);
 
+    await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' }); // → pending_level_selection
+    const r2 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+    }); // → pending_user_selection
+    const reviewId = (r2.structuredContent as Record<string, unknown>)['review_id'] as string;
+
     const res = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'ctx',
       rewrite_level: 'balanced',
+      review_id: reviewId,
       selection: 'update',
     });
     expect(res.isError).toBe(true);
@@ -512,10 +607,12 @@ describe('handleReviewAndSelect', () => {
       message: 'feedback is required when selection="update"',
       selected_prompt: null,
     });
-    expect(llmCalls).toBe(0);
+    // llmCalls === 1: the FIRST rewrite (call 2 of the flow). The failed
+    // update relay itself made no additional LLM call.
+    expect(llmCalls).toBe(1);
   });
 
-  it('echo fallback: update relay without rewrite_level falls back to "balanced"', async () => {
+  it('echo fallback: update relay reuses the STORED review level (no silent "balanced" default)', async () => {
     const provider = new MockProvider((messages) =>
       messages.some((m) => m.content.includes('add criteria'))
         ? { kind: 'ok', reply: 'Revised' }
@@ -524,9 +621,18 @@ describe('handleReviewAndSelect', () => {
     const deps = makeDeps({ kind: 'ok', reply: 'unused' }, elicitationUnsupported());
     deps.rewrite = new RewriteService(provider);
 
+    await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' }); // → pending_level_selection
+    const r2 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'detailed', // the USER chose "detailed"
+    }); // → pending_user_selection
+    const reviewId = (r2.structuredContent as Record<string, unknown>)['review_id'] as string;
+
     const res = await handleReviewAndSelect(deps, {
       prompt: 'hello',
       context: 'ctx',
+      review_id: reviewId,
       selection: 'update',
       feedback: 'add criteria',
       rewritten_prompt: 'Enriched',
@@ -536,7 +642,50 @@ describe('handleReviewAndSelect', () => {
       status: 'pending_user_selection',
       rewritten_prompt: 'Revised',
     });
-    // No rewrite_level relayed → the revision keeps the documented default level.
-    expect(provider.calls[0]?.messages[0]?.content).toBe(buildMetaPrompt('balanced'));
+    // The revision runs at the level the user chose for this review.
+    expect(provider.calls[1]?.messages[0]?.content).toBe(buildMetaPrompt('detailed'));
+  });
+
+  it('echo fallback: revision limit applies ACROSS relay calls (no unbounded update loop)', async () => {
+    const deps = makeDeps({ kind: 'ok', reply: 'Enriched' }, elicitationUnsupported());
+
+    await handleReviewAndSelect(deps, { prompt: 'hello', context: 'ctx' }); // → pending_level_selection
+    const r2 = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      rewrite_level: 'balanced',
+    }); // → pending_user_selection
+    let reviewId = (r2.structuredContent as Record<string, unknown>)['review_id'] as string;
+
+    // Relay "update" until the stored revision cap rejects the next round.
+    let last = r2;
+    for (let i = 0; i < 25; i++) {
+      const r = await handleReviewAndSelect(deps, {
+        prompt: 'hello',
+        context: 'ctx',
+        review_id: reviewId,
+        selection: 'update',
+        feedback: `change ${i}`,
+      });
+      expect(r.isError).toBeFalsy();
+      last = r;
+      reviewId = (r.structuredContent as Record<string, unknown>)['review_id'] as string;
+    }
+    expect((last.structuredContent as Record<string, unknown>)['revision_count']).toBe(25);
+
+    // The 26th revision attempt exceeds MAX_REVISIONS (25).
+    const over = await handleReviewAndSelect(deps, {
+      prompt: 'hello',
+      context: 'ctx',
+      review_id: reviewId,
+      selection: 'update',
+      feedback: 'one too many',
+    });
+    expect(over.isError).toBe(true);
+    expect(over.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'revision_limit',
+      selected_prompt: null,
+    });
   });
 });

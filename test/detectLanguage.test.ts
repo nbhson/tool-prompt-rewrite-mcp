@@ -44,15 +44,28 @@ describe('detectLanguage', () => {
     // A single borrowed word ("tin") is not enough to call it Vietnamese.
     expect(detectLanguage('how to remove rust from a tin can')).toBe('english');
   });
+
+  it('detects Romance languages instead of mislabelling them Vietnamese', () => {
+    // Spanish: accented vowels (á, é) used to trigger the Vietnamese signal.
+    expect(detectLanguage('Necesito ayuda para arreglar este error, por favor')).toBe('spanish');
+    expect(detectLanguage('¿Cómo puedo hacer esto? Quiero que funcione.')).toBe('spanish');
+    // French: ç/œ are French-only characters.
+    expect(detectLanguage('Réparer le ça, je suis débutant en français')).toBe('french');
+    expect(detectLanguage('Je veux que tu corriges le bug dans le fichier, très vite')).toBe('french');
+    // Portuguese.
+    expect(detectLanguage('Preciso de ajuda para consertar isso, não funciona')).toBe('portuguese');
+  });
 });
 
 describe('languageHint', () => {
-  it('maps detected ids to prompt-friendly names', () => {
-    expect(languageHint('vietnamese')).toBe('Vietnamese');
+  it('maps detected ids to prompt-friendly names', () => {    expect(languageHint('vietnamese')).toBe('Vietnamese');
     expect(languageHint('english')).toBe('English');
     expect(languageHint('japanese')).toBe('Japanese');
     expect(languageHint('chinese')).toBe('Chinese (Simplified, Mandarin)');
     expect(languageHint('korean')).toBe('Korean');
+    expect(languageHint('spanish')).toBe('Spanish');
+    expect(languageHint('french')).toBe('French');
+    expect(languageHint('portuguese')).toBe('Portuguese');
     expect(languageHint('unknown')).toBe('the original language of the prompt');
   });
 });

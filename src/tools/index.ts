@@ -11,6 +11,7 @@ import type { Logger } from '../logger.js';
 import { registerRewritePromptTool } from './rewritePrompt.js';
 import { registerReviewAndSelectTool, type ReviewDeps } from './reviewAndSelect.js';
 import { registerGetClientCapabilitiesTool } from './getClientCapabilities.js';
+import { PendingReviewStore } from '../session/session.js';
 
 export interface ToolDeps {
   server: McpServer;
@@ -42,6 +43,9 @@ export function registerAllTools(deps: ToolDeps): void {
     log: deps.log,
     detect: deps.detectCapabilities,
     echoFallback: deps.echoFallback ?? true,
+    // One store per server process: pending reviews are verified on re-calls
+    // so the agent can only approve the exact text the user saw.
+    pendingReviews: new PendingReviewStore(),
     ...(deps.reviewDeps ?? {}),
   };
   registerReviewAndSelectTool(reviewDeps);

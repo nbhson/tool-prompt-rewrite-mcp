@@ -11,9 +11,13 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import type { LLMProvider } from '../llm/provider.js';
-import { withRetry } from '../llm/provider.js';
+import { withRetry, LLMError } from '../llm/provider.js';
 import { detectLanguage, languageHint } from './detectLanguage.js';
 import type { RewriteLevel, RewriteResult } from '../types.js';
+
+// LLMError moved to llm/provider.ts (so the provider can throw typed errors
+// without a circular import). Re-exported here for backwards compatibility.
+export { LLMError };
 
 export interface RewriteOptions {
   level?: RewriteLevel;
@@ -128,12 +132,13 @@ export class RewriteService {
         throw new LLMError(
           `Rewrite policy file not found: ${policyFile}`,
           new Error('policy file missing'),
-          0
+          0,
+          'fatal'
         );
       }
       meta = readFileSync(policyFile, 'utf8').trim();
       if (meta.length === 0) {
-        throw new LLMError(`Rewrite policy file is empty: ${policyFile}`, new Error('policy file empty'), 0);
+        throw new LLMError(`Rewrite policy file is empty: ${policyFile}`, new Error('policy file empty'), 0, 'fatal');
       }
     } else {
       meta = buildMetaPrompt(level);
@@ -157,9 +162,13 @@ export class RewriteService {
         this.retryMax
       );
     } catch (err) {
-      // Propagate as a typed error the tool layer can map to a GateError.
+      // Propagate typed errors as-is (they carry a machine-readable code the
+      // tool layer maps to a GateError kind); wrap anything else as fatal,
+      // preserving abort-shaped failures as timeouts for legacy providers.
+      if (err instanceof LLMError) throw err;
       const e = err instanceof Error ? err : new Error(String(err));
-      throw new LLMError(e.message, e, start);
+      const isTimeout = e.name === 'AbortError' || /timed out/i.test(e.message);
+      throw new LLMError(e.message, e, start, isTimeout ? 'timeout' : 'fatal');
     }
 
     const warnings: string[] = [];
@@ -197,13 +206,13 @@ function buildUserMessage(prompt: string, opts: RewriteOptions): string {
   parts.push('');
   parts.push('Original prompt:');
   parts.push('---');
-  parts.push(prompt);
+  parts.push(sanitizeBlock(prompt));
   parts.push('---');
 
   if (opts.context && opts.context.trim().length > 0) {
     parts.push('');
     parts.push('Additional context from user:');
-    parts.push(opts.context.trim());
+    parts.push(sanitizeBlock(opts.context.trim()));
   }
 
   const explicitLanguage = opts.language?.trim() || undefined;
@@ -227,13 +236,13 @@ function buildUserMessage(prompt: string, opts: RewriteOptions): string {
       parts.push('');
       parts.push('Previous rewrite (revise this; do not start over):');
       parts.push('---');
-      parts.push(previous);
+      parts.push(sanitizeBlock(previous));
       parts.push('---');
     }
     parts.push('');
     parts.push('The user reviewed the previous rewrite and requested these changes:');
     parts.push('---');
-    parts.push(feedback);
+    parts.push(sanitizeBlock(feedback));
     parts.push('---');
     parts.push(
       'Apply the requested changes to the previous rewrite and keep everything else ' +
@@ -245,14 +254,13 @@ function buildUserMessage(prompt: string, opts: RewriteOptions): string {
   return parts.join('\n');
 }
 
-export class LLMError extends Error {
-  constructor(
-    message: string,
-    cause: Error,
-    public readonly elapsedMs: number
-  ) {
-    super(message);
-    this.name = 'LLMError';
-    this.cause = cause;
-  }
+/**
+ * Neutralize delimiter collisions: a user prompt/context line that is exactly
+ * "---" would break the "Original prompt: --- ... ---" framing of the user
+ * message. Such lines are defanged (visually near-identical, no longer parsed
+ * as a delimiter boundary).
+ */
+function sanitizeBlock(text: string): string {
+  return text.replace(/^---\s*$/gm, '- - -');
 }
+

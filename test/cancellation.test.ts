@@ -87,7 +87,15 @@ describe('Cancellation & fallback guarantees', () => {
     };
     const deps: ReviewDeps = { server, rewrite: svc, log: quiet };
     const tooLong = 'a'.repeat(32_001);
-    await expect(handleReviewAndSelect(deps, { prompt: tooLong })).rejects.toThrow();
+    // Validation errors return a structured invalid_input response (they
+    // must not throw across the MCP boundary) and never reach the LLM.
+    const res = await handleReviewAndSelect(deps, { prompt: tooLong });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent).toMatchObject({
+      status: 'error',
+      error_kind: 'invalid_input',
+      selected_prompt: null,
+    });
     expect(llmCalled).toBe(false);
   });
 });

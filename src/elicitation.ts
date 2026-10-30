@@ -98,12 +98,13 @@ export async function elicitChoice(server: McpServer, call: ElicitCall): Promise
   if (result.action === 'decline') {
     return { action: 'cancel' };
   }
-  if (result.action === 'accept' && result.content) {
-    const selected = result.content['selected'];
+  if (result.action === 'accept') {
+    const selected = result.content?.['selected'];
     // Server-side validation: even though the schema should enforce this,
-    // never trust the client blindly.
+    // never trust the client blindly. An accept without valid content is a
+    // protocol error, NOT a user decision to cancel.
     if (typeof selected === 'string' && enumValues.includes(selected)) {
-      const rawFeedback = result.content['feedback'];
+      const rawFeedback = result.content?.['feedback'];
       const feedback =
         typeof rawFeedback === 'string' && rawFeedback.trim().length > 0 ? rawFeedback.trim() : undefined;
       return feedback

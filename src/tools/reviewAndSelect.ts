@@ -45,6 +45,7 @@ import {
 import { GateError, type ReviewResult, type PromptSelection, type RewriteLevel } from '../types.js';
 import type { Logger } from '../logger.js';
 import type { ClientCapabilities } from '../capability/capability.js';
+import { PendingReviewStore, type PendingReview } from '../session/session.js';
 
 export const SELECTION_VALUES: readonly PromptSelection[] = ['original', 'rewritten', 'update', 'cancel'];
 export const LEVEL_VALUES: readonly RewriteLevel[] = ['light', 'balanced', 'detailed'];
@@ -78,11 +79,23 @@ export const ReviewAndSelectInputSchema = z.object({
   context: z
     .string()
     .max(8_000)
+    .optional()
     .describe(
       '1-3 sentences summarizing the conversation/session so far (what the user has asked, ' +
         'what files/topics are in play, what was decided). STRONGLY RECOMMENDED: pass this ' +
         'on every call so the rewrite is grounded in prior context. Omit only for brand-new ' +
         'sessions with no history.'
+    ),
+  review_id: z
+    .string()
+    .min(8)
+    .max(64)
+    .optional()
+    .describe(
+      'REQUIRED on every re-call that passes `selection`: the review_id returned in ' +
+        'structuredContent of the previous "pending_user_selection" result. The server ' +
+        'verifies the re-call against the stored review, so the agent can only approve ' +
+        'the exact text the user saw.'
     ),
   rewrite_level: z
     .enum(['light', 'balanced', 'detailed'])
@@ -211,7 +224,15 @@ export interface ReviewDeps {
    * hard compatibility error instead (strictest mode).
    */
   echoFallback?: boolean;
+  /**
+   * Server-side store for pending reviews (text-echo fallback). Injected so
+   * tests can use an isolated store; defaults to a module-level store.
+   */
+  pendingReviews?: PendingReviewStore;
 }
+
+/** Default store when none is injected (one per server process). */
+const defaultPendingReviews = new PendingReviewStore();
 
 export function buildElicitDeps(deps: ReviewDeps) {
   const elicit = deps.elicit ?? ((call: ElicitCall) => elicitChoice(deps.server, call));
@@ -227,23 +248,98 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
   const { log, rewrite } = deps;
   const echoFallback = deps.echoFallback ?? true;
   const detect = deps.detect;
+  const pendingReviews = deps.pendingReviews ?? defaultPendingReviews;
 
-  const input = ReviewAndSelectInputSchema.parse(rawInput);
+  const parsed = ReviewAndSelectInputSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Invalid input for review_and_select_prompt (${issue?.path.join('.') || 'input'}): ${issue?.message ?? 'validation failed'}. Nothing was forwarded.`,
+        },
+      ],
+      isError: true,
+      structuredContent: {
+        status: 'error',
+        error_kind: 'invalid_input',
+        message: issue?.message ?? 'validation failed',
+        selected_prompt: null,
+      },
+    };
+  }
+  const input = parsed.data;
   const requestId = randomUUID().slice(0, 8);
   const start = Date.now();
+  /** The verified pending review when the user relayed selection="update". */
+  let updateReview: PendingReview | undefined;
 
   // ── Fast path: re-invocation after pending_user_selection ───────────
   // When the first call returned "pending_user_selection" (the client does
   // not support elicitation), the agent shows the choices to the user, the
   // user picks one, and the agent calls this tool again WITH the user's
-  // `selection`. For original/rewritten/cancel this path does NOT call the
-  // LLM again — it simply maps the explicit choice to the outcome (the
-  // rewrite was already produced and approved as-is).
+  // `selection` and the `review_id` echoed from that pending response. The
+  // server verifies the re-call against the STORED review, so the agent can
+  // only approve the exact original/rewritten text the user saw — it cannot
+  // substitute a different `rewritten_prompt`. For original/rewritten/cancel
+  // this path does NOT call the LLM again.
   //
   // "update" is NOT a final choice: the user wants changes, so it must
   // rewrite again. It falls through to the revision flow below.
-  if (input.selection && input.selection !== OPTION_UPDATE) {
+  if (input.selection) {
     const chosen = input.selection;
+
+    // Integrity: a selection relay must reference a live pending review.
+    const review = input.review_id ? pendingReviews.get(input.review_id) : undefined;
+    if (!review) {
+      log.warn('review_and_select_prompt: selection without a valid review_id', {
+        requestId,
+        chosen,
+        hasReviewId: Boolean(input.review_id),
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'selection requires a valid `review_id` from the previous "pending_user_selection" ' +
+              'result (unknown, expired, or missing). The prompt was NOT forwarded. Re-run the ' +
+              'gate from the first call, then relay the user\'s choice with the review_id the ' +
+              'pending response returned.',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'invalid_input',
+          message: 'selection requires a valid review_id from a pending_user_selection',
+          selected_prompt: null,
+        },
+      };
+    }
+    // Integrity: the original prompt must be unchanged from the pending review.
+    if (input.prompt !== review.originalPrompt) {
+      pendingReviews.remove(review.id);
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'The `prompt` does not match the pending review. The prompt was NOT forwarded. ' +
+              'Re-run the gate from the first call with the exact original prompt.',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'invalid_input',
+          message: 'prompt does not match the pending review',
+          selected_prompt: null,
+        },
+      };
+    }
+
     log.info('review_and_select_prompt: selection received', {
       requestId,
       chosen,
@@ -251,47 +347,83 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
     });
 
     // Map the user's explicit choice to the outcome. The rewrite was
-    // already produced on the first call; we reuse the caller's
-    // `prompt`/`rewrite_level`/`language`/`context` so the response is
-    // self-consistent. We do NOT call the LLM again.
-    const original = input.prompt;
-    const result: ReviewResult =
-      chosen === 'cancel'
-        ? { status: 'cancelled', selectedOption: 'cancel', selectedPrompt: null }
-        : chosen === 'rewritten'
+    // already produced on the first call; we reuse the STORED review state
+    // (original/rewritten/level/context) so the response cannot drift from
+    // what the user saw. We do NOT call the LLM again.
+    if (chosen === 'cancel') {
+      pendingReviews.remove(review.id);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'Prompt gate: user cancelled. No prompt was approved and none was forwarded.',
+          },
+        ],
+        structuredContent: { status: 'cancelled', selected_option: 'cancel', selected_prompt: null },
+      };
+    }
+
+    // Integrity: an explicitly relayed rewritten_prompt must match the
+    // stored version the user saw — the agent cannot substitute its own.
+    if (input.rewritten_prompt !== undefined && input.rewritten_prompt !== review.rewrittenPrompt) {
+      pendingReviews.remove(review.id);
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'The `rewritten_prompt` does not match the version the user reviewed. ' +
+              'The prompt was NOT forwarded. Relay the choice with the review_id and ' +
+              'the exact rewritten text from the pending response.',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'invalid_input',
+          message: 'rewritten_prompt does not match the pending review',
+          selected_prompt: null,
+        },
+      };
+    }
+
+    if (chosen === 'update') {
+      // Not final: the user wants changes. Validation of the reviewed text
+      // happened above; the rewrite uses the stored level/language/context.
+      updateReview = review;
+    } else {
+      // "original" / "rewritten" → approved; the loop ends here.
+      const result: ReviewResult =
+        chosen === 'rewritten'
           ? {
               status: 'approved',
               selectedOption: 'rewritten',
-              selectedPrompt: input.rewritten_prompt ?? original,
-              originalPrompt: original,
-              rewrittenPrompt: input.rewritten_prompt ?? original,
+              selectedPrompt: review.rewrittenPrompt,
+              originalPrompt: review.originalPrompt,
+              rewrittenPrompt: review.rewrittenPrompt,
             }
           : {
               status: 'approved',
               selectedOption: 'original',
-              selectedPrompt: original,
-              originalPrompt: original,
-              rewrittenPrompt: input.rewritten_prompt ?? original,
+              selectedPrompt: review.originalPrompt,
+              originalPrompt: review.originalPrompt,
+              rewrittenPrompt: review.rewrittenPrompt,
             };
+      pendingReviews.remove(review.id);
 
-    const text =
-      result.status === 'cancelled'
-        ? 'Prompt gate: user cancelled. No prompt was approved and none was forwarded.'
-        : `Prompt gate: approved "${result.selectedOption}" prompt.\n\n${result.selectedPrompt}`;
+      const text = `Prompt gate: approved "${result.selectedOption}" prompt.\n\n${result.selectedPrompt}`;
 
-    return {
-      content: [{ type: 'text', text }],
-      structuredContent:
-        result.status === 'cancelled'
-          ? { status: 'cancelled', selected_option: 'cancel', selected_prompt: null }
-          : {
-              status: 'approved',
-              selected_option: result.selectedOption,
-              selected_prompt: result.selectedPrompt,
-              original_prompt: result.originalPrompt,
-              rewritten_prompt: result.rewrittenPrompt,
-            },
-    };
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: {
+          status: 'approved',
+          selected_option: result.selectedOption,
+          selected_prompt: result.selectedPrompt,
+          original_prompt: result.originalPrompt,
+          rewritten_prompt: result.rewrittenPrompt,
+        },
+      };
+    }
   }
 
   log.info('review_and_select_prompt: started', { requestId, promptLen: input.prompt.length });
@@ -422,6 +554,19 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
         // 2. echoFallback=false (strict): hard compatibility error, as before.
         if (ge.kind === 'elicitation_unsupported' && echoFallback) {
           const supports = detect ? detect().elicitationSupported : false;
+          // Store the pending review server-side: the re-call must carry its
+          // review_id, and only the stored rewritten/original text can be
+          // approved (the agent cannot substitute a different text).
+          const reviewId = pendingReviews.create({
+            originalPrompt: original,
+            rewrittenPrompt: rewritten,
+            changesSummary,
+            warnings,
+            level,
+            language: input.language,
+            context: input.context,
+            revisionCount,
+          });
           const menu = [
             'The client does not support MCP elicitation, so an interactive picker ' +
               'cannot be shown. Below are the two versions; ask the user to choose, ' +
@@ -446,14 +591,16 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
             '[4] cancel — use neither; abort the prompt gate',
             '',
             'When the user answers, call review_and_select_prompt again with the ' +
-              'SAME prompt/context/rewrite_level/language and `selection` set to:',
-            '- "original" or "rewritten" — to finalize (pass `rewritten_prompt` the ' +
-              'user saw when choosing "rewritten");',
+              'SAME prompt/context/rewrite_level/language, `selection` set to:',
+            '- "original" or "rewritten" — to finalize;',
             '- "cancel" — to abort;',
             '- "update" — PLUS `feedback` with the requested changes; the tool then ' +
               'rewrites again and returns a NEW pending_user_selection to review. ' +
               'Repeat until the user picks original, rewritten, or cancel.',
-            'Never pick for the user.',
+            'ALWAYS pass review_id="' +
+              reviewId +
+              '" (returned here in structuredContent) — re-calls with `selection` ' +
+              'without it are rejected. Never pick for the user.',
           ]
             .filter(Boolean)
             .join('\n');
@@ -461,6 +608,7 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
             content: [{ type: 'text', text: menu }],
             structuredContent: {
               status: 'pending_user_selection',
+              review_id: reviewId,
               original_prompt: original,
               rewritten_prompt: rewritten,
               changes_summary: changesSummary,
@@ -620,9 +768,30 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
   // The previous call returned pending_user_selection, the user picked
   // "update", and the agent relays their feedback here. This is NOT a
   // final choice, so we rewrite again (revising the text the user saw)
-  // and re-enter the review loop. No level picker is shown: the level was
-  // chosen in the first call and is relayed via `rewrite_level`.
+  // and re-enter the review loop. The level/language/context come from
+  // the STORED review (the user's own choices), never from agent input.
   if (input.selection === OPTION_UPDATE) {
+    // Unreachable unless the fast path above verified the review — kept
+    // as a defensive check so TS narrowing and runtime agree.
+    if (!updateReview) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'selection="update" requires a valid `review_id` from a "pending_user_selection" ' +
+              'result. Nothing was forwarded.',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'invalid_input',
+          message: 'selection="update" requires a valid review_id',
+          selected_prompt: null,
+        },
+      };
+    }
     const feedback = input.feedback?.trim();
     if (!feedback) {
       return {
@@ -643,16 +812,38 @@ export async function handleReviewAndSelect(deps: ReviewDeps, rawInput: unknown)
         },
       };
     }
+    if (updateReview.revisionCount >= MAX_REVISIONS) {
+      pendingReviews.remove(updateReview.id);
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Reached the revision limit (${MAX_REVISIONS}) for this review. ` +
+              'Ask the user to finalize: "original", "rewritten", or "cancel".',
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          status: 'error',
+          error_kind: 'revision_limit',
+          message: `revision limit (${MAX_REVISIONS}) reached`,
+          selected_prompt: null,
+        },
+      };
+    }
 
-    level = input.rewrite_level ?? 'balanced';
+    level = updateReview.level;
     log.info('review_and_select_prompt: revision requested (relay)', {
       requestId,
       level,
+      revision: updateReview.revisionCount + 1,
       feedbackLen: feedback.length,
     });
-    const failed = await doRewrite(feedback, input.rewritten_prompt);
+    const failed = await doRewrite(feedback, updateReview.rewrittenPrompt);
     if (failed) return failed;
-    revisionCount = 1;
+    pendingReviews.remove(updateReview.id); // replaced by a NEW entry in the pending response
+    revisionCount = updateReview.revisionCount + 1;
 
     return await selectionLoop();
   }
@@ -804,7 +995,7 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         'original, rewritten, or cancel. Never auto-select.\n' +
         '\n' +
         'CALLING GUIDE (for the LLM):\n' +
-        '- FIRST call: pass prompt + context (+ language); do NOT pass ' +
+        '- FIRST call: pass prompt (+ optional context and language); do NOT pass ' +
         '`rewrite_level` and do NOT pass `selection` — the user chooses ' +
         'the level. ALWAYS pass a short `context` (1-3 sentences) ' +
         'summarizing the conversation so far.\n' +
@@ -814,13 +1005,14 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         'matching their choice.\n' +
         '- If a call returns status "pending_user_selection": show the two ' +
         'versions to the user, ask which to use, then call again with the ' +
-        'SAME inputs PLUS `selection` set to "original", "rewritten", or ' +
-        '"cancel" matching the user\'s choice. If the user wants changes ' +
-        'instead ("update"), call again with `selection: "update"` PLUS ' +
-        '`feedback` containing their requested changes (and ' +
-        '`rewritten_prompt` of the version they reviewed); the tool replies ' +
-        'with a new "pending_user_selection". Loop until the user picks ' +
-        'original, rewritten, or cancel — never decide for them.\n' +
+        'SAME inputs PLUS `review_id` (echoed in structuredContent of the ' +
+        'pending result — REQUIRED) and `selection` set to "original", ' +
+        '"rewritten", or "cancel" matching the user\'s choice. If the user ' +
+        'wants changes instead ("update"), call again with `review_id`, ' +
+        '`selection: "update"` PLUS `feedback` containing their requested ' +
+        'changes; the tool replies with a new "pending_user_selection". ' +
+        'Loop until the user picks original, rewritten, or cancel — never ' +
+        'decide for them.\n' +
         "- ALWAYS pass `language` set to the language of the user's original " +
         'prompt (e.g. "vietnamese"), so the rewrite stays in that language. If ' +
         'the user explicitly asks for a different output language, pass that ' +
@@ -830,6 +1022,7 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
         prompt: ReviewAndSelectInputSchema.shape.prompt,
         language: ReviewAndSelectInputSchema.shape.language,
         context: ReviewAndSelectInputSchema.shape.context,
+        review_id: ReviewAndSelectInputSchema.shape.review_id,
         rewrite_level: ReviewAndSelectInputSchema.shape.rewrite_level,
         selection: ReviewAndSelectInputSchema.shape.selection,
         rewritten_prompt: ReviewAndSelectInputSchema.shape.rewritten_prompt,
@@ -843,8 +1036,18 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
 function normalizeGateError(err: unknown, requestId: string): GateError {
   if (err instanceof GateError) return err;
   if (err instanceof LLMError) {
-    const msg = err.message.toLowerCase();
-    const kind = msg.includes('timed out') ? 'llm_timeout' : 'llm_unavailable';
+    // Typed code first (robust); keep a message fallback for LLMErrors
+    // constructed without a code (e.g. policy-file errors).
+    const kind =
+      err.code === 'timeout'
+        ? 'llm_timeout'
+        : err.code === 'malformed'
+          ? 'llm_malformed_output'
+          : err.code === 'transient' || err.code === 'fatal'
+            ? 'llm_unavailable'
+            : err.message.toLowerCase().includes('timed out')
+              ? 'llm_timeout'
+              : 'llm_unavailable';
     return new GateError(kind, err.message, { requestId, elapsedMs: err.elapsedMs });
   }
   return new GateError('unknown', err instanceof Error ? err.message : String(err), { requestId });

@@ -17,7 +17,16 @@
  * - CJK is detected by character ranges, not by word lists.
  */
 
-export type DetectedLanguage = 'vietnamese' | 'english' | 'japanese' | 'chinese' | 'korean' | 'unknown';
+export type DetectedLanguage =
+  | 'vietnamese'
+  | 'english'
+  | 'japanese'
+  | 'chinese'
+  | 'korean'
+  | 'spanish'
+  | 'french'
+  | 'portuguese'
+  | 'unknown';
 
 interface LanguageSpec {
   id: DetectedLanguage;
@@ -27,11 +36,11 @@ interface LanguageSpec {
   minMatches: number;
 }
 
-// Vietnamese: any letter with a tone mark or diacritic.
-// We intentionally EXCLUDE plain 'u', 'a', 'e', 'i', 'o' (too ambiguous with
-// English) and keep only letters that are unambiguously Vietnamese diacritics
-// (e.g. ư, ơ, ă, â, ơ, ơ, à, á, ả, ã, ă, ẹ, ế, ...).
-const VIET_SIGNAL = /[àáạảãâầấẩẫăằắẳẵơờớởỡưừứửữựệếềểễỉíịọỏợỗởốộỳýỷýùú]/g;
+// Vietnamese: letters that are unambiguously Vietnamese when combined with
+// tone/diacritic forms (ă â ơ ư + their tone-marked variants, đ). Shared
+// single accented vowels (à á ã é í ó ú ý...) are ALSO included because
+// Romance languages are caught earlier by their word signals (see SPECS).
+const VIET_SIGNAL = /[ăâấầẩẫậắằẳẵặèéẹẻẽêềếểễệìíịỉĩòóọỏõôồốổỗộơờớởỡợùúụủũưừứửữựỳýỵỷỹđàáạảã]/g;
 // Japanese: Hiragana / Katakana (Kanji excluded so we don't collide with
 // Chinese detection below; we rely on kana presence to label Japanese text).
 const JAP_SIGNAL = /[\u3040-\u30ff]/g;
@@ -51,16 +60,34 @@ const ENGLISH_SIGNAL =
 const VIET_WORDS_SIGNAL =
   /\b(khong|duoc|nhung|nguoi|cua|cho|trong|khi|nay|thi|neu|rat|voi|toi|cac|mot|hai|giup|viet|sua|xem|tim|lam|giai|thich|cach|hoat|tat|hom|tuc|tin|thong|nam|tam|sau|truoc|len|xuong|vao|hoc|ngu|uong|chao|xin|thay|biet|muon|loi|nhap|huong|noi|nhu|theo|dang|sao|nao|minh|chung|cung)\b/g;
 
-// Order matters: Vietnamese diacritics are checked FIRST because they are
-// the strongest, unambiguous signal. Kana is checked before Han so Japanese
-// text is labelled Japanese, not Chinese.
+// Romance languages: their accented vowels overlap the Vietnamese signal
+// above (à á ã é í ú ù ý), so their word signals are checked BEFORE the
+// Vietnamese diacritics to avoid labelling Spanish/French/Portuguese
+// prompts as Vietnamese.
+const SPANISH_SIGNAL =
+  /\b(para|pero|como|cuando|porque|más|está|esto|esta|este|todo|hacer|puede|entre|también|entonces|ahora|después|aunque|desde|quiero|necesito|gracias)\b/g;
+const PORTUGUESE_SIGNAL =
+  /\b(não|uma|mais|isso|você|tudo|quando|muito|também|depois|antes|porque|sobre|então|estão|fazer|preciso|obrigado|obrigada)\b/g;
+const FRENCH_SIGNAL =
+  /\b(les|des|une|pour|avec|dans|vous|faire|mais|plus|être|chaque|alors|comme|très|après|toujours|maintenant|besoin|peut)\b/g;
+// French-only characters (never Vietnamese): cédille and the oe ligature.
+const FRENCH_CHARS_SIGNAL = /[çœ]/g;
+
+// Order matters: unambiguous CJK/Hangul character signals first, then
+// Romance word signals (before Vietnamese — the shared accented vowels
+// would otherwise win), then Vietnamese diacritics, then Vietnamese
+// unaccented words, then English (word-based, handled specially below).
 const SPECS: LanguageSpec[] = [
-  { id: 'vietnamese', signal: VIET_SIGNAL, minMatches: 2 },
-  // Same language, second signal: Vietnamese typed without diacritics.
-  { id: 'vietnamese', signal: VIET_WORDS_SIGNAL, minMatches: 2 },
   { id: 'japanese', signal: JAP_SIGNAL, minMatches: 2 },
   { id: 'korean', signal: KOREAN_SIGNAL, minMatches: 2 },
   { id: 'chinese', signal: CHINESE_SIGNAL, minMatches: 2 },
+  { id: 'french', signal: FRENCH_CHARS_SIGNAL, minMatches: 1 },
+  { id: 'spanish', signal: SPANISH_SIGNAL, minMatches: 2 },
+  { id: 'portuguese', signal: PORTUGUESE_SIGNAL, minMatches: 2 },
+  { id: 'french', signal: FRENCH_SIGNAL, minMatches: 2 },
+  { id: 'vietnamese', signal: VIET_SIGNAL, minMatches: 2 },
+  // Same language, second signal: Vietnamese typed without diacritics.
+  { id: 'vietnamese', signal: VIET_WORDS_SIGNAL, minMatches: 2 },
   { id: 'english', signal: ENGLISH_SIGNAL, minMatches: 3 },
 ];
 
@@ -114,6 +141,12 @@ export function languageHint(id: DetectedLanguage): string {
       return 'Chinese (Simplified, Mandarin)';
     case 'korean':
       return 'Korean';
+    case 'spanish':
+      return 'Spanish';
+    case 'french':
+      return 'French';
+    case 'portuguese':
+      return 'Portuguese';
     default:
       return 'the original language of the prompt';
   }

@@ -1,66 +1,71 @@
 /**
- * Session & pending-request management.
+ * Pending-review state for the text-echo fallback of the gate tool.
  *
- * Each MCP client connection (stdio process, or HTTP session) gets an
- * isolated session. Concurrent calls within one session must not
- * share approval decisions; abandoned pending requests must be cleaned up.
+ * When the client does not support MCP elicitation, `review_and_select_prompt`
+ * returns a "pending_user_selection" result and the agent relays the user's
+ * choice on a re-call. To guarantee that the agent approves EXACTLY what the
+ * user saw (and not a substituted text), the server stores the pending review
+ * state here and requires the re-call to carry the matching `review_id`.
+ *
+ * Entries are short-lived (TTL) and removed once the review resolves.
  */
 
 import { randomUUID } from 'node:crypto';
+import type { RewriteLevel } from '../types.js';
 
-export interface PendingApproval {
+/** State stored server-side between a pending_user_selection and its relay. */
+export interface PendingReview {
   id: string;
+  originalPrompt: string;
+  rewrittenPrompt: string;
+  changesSummary: string;
+  warnings?: string[];
+  /** The level the USER chose for this review (reused for revisions). */
+  level: RewriteLevel;
+  language?: string;
+  context?: string;
+  /** Revision rounds already applied in this review chain. */
+  revisionCount: number;
   createdAt: number;
-  /** Set when the user interaction completes. */
-  resolved: boolean;
 }
 
-export class SessionManager {
-  /** Keyed by session identifier (per-connection). */
-  private readonly sessions = new Map<string, { pending: Map<string, PendingApproval> }>();
+/** How long an unanswered pending review stays valid. */
+export const PENDING_REVIEW_TTL_MS = 30 * 60 * 1000;
 
-  newSession(): string {
+export class PendingReviewStore {
+  private readonly entries = new Map<string, PendingReview>();
+
+  constructor(private readonly ttlMs: number = PENDING_REVIEW_TTL_MS) {}
+
+  /** Store a new pending review and return its id. */
+  create(data: Omit<PendingReview, 'id' | 'createdAt'>): string {
+    this.purgeExpired();
     const id = randomUUID();
-    this.sessions.set(id, { pending: new Map() });
+    this.entries.set(id, { ...data, id, createdAt: Date.now() });
     return id;
   }
 
-  getSession(id: string): Map<string, PendingApproval> | undefined {
-    return this.sessions.get(id)?.pending;
+  /** Look up a pending review; expired or unknown ids return undefined. */
+  get(id: string): PendingReview | undefined {
+    this.purgeExpired();
+    return this.entries.get(id);
   }
 
-  addPending(sessionId: string): string {
-    const s = this.sessions.get(sessionId);
-    if (!s) throw new Error(`Unknown session: ${sessionId}`);
-    const id = randomUUID();
-    s.pending.set(id, { id, createdAt: Date.now(), resolved: false });
-    return id;
+  /** Drop a pending review (after approval / cancellation / replacement). */
+  remove(id: string): void {
+    this.entries.delete(id);
   }
 
-  resolvePending(sessionId: string, pendingId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s) return;
-    const p = s.pending.get(pendingId);
-    if (p) p.resolved = true;
+  /** Number of live entries (used by tests). */
+  get size(): number {
+    this.purgeExpired();
+    return this.entries.size;
   }
 
-  /** Remove abandoned pending requests older than ttlMs. */
-  cleanupAbandoned(sessionId: string, ttlMs: number): number {
-    const s = this.sessions.get(sessionId);
-    if (!s) return 0;
-    const cutoff = Date.now() - ttlMs;
-    let removed = 0;
-    for (const [k, v] of s.pending) {
-      if (!v.resolved && v.createdAt < cutoff) {
-        s.pending.delete(k);
-        removed++;
-      }
+  private purgeExpired(): void {
+    const cutoff = Date.now() - this.ttlMs;
+    for (const [k, v] of this.entries) {
+      if (v.createdAt < cutoff) this.entries.delete(k);
     }
-    return removed;
-  }
-
-  /** Drop a session entirely (on client disconnect / transport close). */
-  closeSession(sessionId: string): void {
-    this.sessions.delete(sessionId);
   }
 }

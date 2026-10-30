@@ -36,6 +36,7 @@ export const RewritePromptInputSchema = z.object({
   context: z
     .string()
     .max(8_000)
+    .optional()
     .describe(
       '1-3 sentences summarizing the conversation/session so far (what the user has asked, ' +
         'what files/topics are in play, what was decided). STRONGLY RECOMMENDED: pass this ' +
@@ -66,9 +67,9 @@ export function registerRewritePromptTool(server: McpServer, rewrite: RewriteSer
         'user-confirmed flow.\n' +
         '\n' +
         'CALLING GUIDE (for the LLM):\n' +
-        '- ALWAYS pass a short `context` (1-3 sentences) summarizing the ' +
-        'conversation/session so far so the enrichment is grounded. Do not ' +
-        'omit it.\n' +
+        '- Pass a short `context` (1-3 sentences) summarizing the ' +
+        'conversation/session so far so the enrichment is grounded. Omit it ' +
+        'only for brand-new sessions with no history.\n' +
         '- Choose `rewrite_level` to fit the task: `light` for quick one-shot ' +
         'answers, `balanced` (default) for most coding/research work, ' +
         '`detailed` when the user explicitly wants a fully-specified spec.\n' +
@@ -145,8 +146,12 @@ export function registerRewritePromptTool(server: McpServer, rewrite: RewriteSer
 function normalizeGateError(err: unknown, requestId: string): GateError {
   if (err instanceof GateError) return err;
   if (err instanceof LLMError) {
-    const msg = err.message.toLowerCase();
-    const kind = msg.includes('timed out') ? 'llm_timeout' : 'llm_unavailable';
+    const kind =
+      err.code === 'timeout'
+        ? 'llm_timeout'
+        : err.code === 'malformed'
+          ? 'llm_malformed_output'
+          : 'llm_unavailable';
     return new GateError(kind, err.message, { requestId, elapsedMs: err.elapsedMs });
   }
   return new GateError('unknown', err instanceof Error ? err.message : String(err), { requestId });

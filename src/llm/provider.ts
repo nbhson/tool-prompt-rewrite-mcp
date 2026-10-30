@@ -25,6 +25,22 @@ export interface LLMProvider {
   isConfigured(): boolean;
 }
 
+/** Machine-readable classification of LLM failures (used for retry + error mapping). */
+export type LLMErrorCode = 'timeout' | 'transient' | 'malformed' | 'fatal';
+
+export class LLMError extends Error {
+  /** Machine-readable classification. Always set by this provider. */
+  readonly code: LLMErrorCode;
+  readonly elapsedMs: number;
+  constructor(message: string, cause: unknown, elapsedMs: number, code: LLMErrorCode) {
+    super(message);
+    this.elapsedMs = elapsedMs;
+    this.name = 'LLMError';
+    this.cause = cause;
+    this.code = code;
+  }
+}
+
 export class OpenAICompatibleProvider implements LLMProvider {
   constructor(private readonly cfg: LLMConfig) {}
 
@@ -38,6 +54,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    const start = Date.now();
 
     try {
       const body: Record<string, unknown> = {
@@ -49,8 +66,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       };
       // Thinking models spend the token budget on reasoning_content and
       // leave message.content empty — even when the provider claims
-      // thinking is off. Treat reasoning_content as a fallback so the
-      // pipeline still has text to work with.
+      // thinking is off. We do NOT use reasoning_content as the answer:
+      // an empty content with a reasoning payload is surfaced as a typed
+      // 'malformed' error (see below) so the misconfiguration is visible.
       if (this.cfg.extraBody?.thinking === false) {
         body.thinking_budget = 0;
       }
@@ -69,7 +87,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`LLM HTTP ${res.status}: ${truncate(text, 200)}`);
+        // Server-side rate limits and outage codes are retry-worthy.
+        const code: LLMErrorCode = res.status >= 500 || res.status === 429 ? 'transient' : 'fatal';
+        throw new LLMError(`LLM HTTP ${res.status}: ${truncate(text, 200)}`, null, Date.now() - start, code);
       }
 
       const json = (await res.json()) as unknown;
@@ -77,29 +97,33 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const trimmed = out?.trim() ?? '';
       // Thinking models via llama.cpp may return empty `content` while
       // putting the answer in `reasoning_content`. Surface a diagnosable
-      // error so the user knows to either:
+      // typed error so the user knows to either:
       //   1. run a non-thinking model (e.g. qwen2.5-7b), or
       //   2. confirm their llama.cpp build actually honors thinking:false.
       if (trimmed.length === 0) {
         const reasoning = extractReasoningContent(json);
         if (out === null) {
-          throw new Error('LLM returned malformed completion (no content[0].text).');
+          throw new LLMError('LLM returned malformed completion (no content[0].text).', null, Date.now() - start, 'malformed');
         }
         if (reasoning !== null && reasoning.trim().length > 0) {
-          throw new Error(
+          throw new LLMError(
             'LLM returned empty content but produced reasoning_content; ' +
             'your model is a thinking variant that is not respecting ' +
             'thinking:false. Use a non-thinking model (e.g. qwen2.5-7b) ' +
-            'or a llama.cpp build that supports thinking:false.'
+            'or a llama.cpp build that supports thinking:false.',
+            null,
+            Date.now() - start,
+            'malformed'
           );
         }
-        throw new Error('LLM returned an empty completion.');
+        throw new LLMError('LLM returned an empty completion.', null, Date.now() - start, 'malformed');
       }
       return trimmed;
     } catch (err) {
-      // Propagate AbortError distinctly so callers can retry only on timeout.
+      if (err instanceof LLMError) throw err;
+      // Propagate aborts as typed timeouts so callers can retry only on timeout.
       if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error('LLM request timed out');
+        throw new LLMError('LLM request timed out', err, Date.now() - start, 'timeout');
       }
       throw err;
     } finally {
@@ -162,10 +186,15 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries: number): Pr
       return await fn();
     } catch (err) {
       lastErr = err;
-      // Only retry on transient network-ish errors; give up on the rest.
-      const msg = err instanceof Error ? err.message : String(err);
+      // Only retry on transient errors; give up on the rest. Typed LLMError
+      // codes are authoritative; the message regex only covers plain Errors
+      // (e.g. raw fetch failures) thrown by non-typed code paths.
       const isTransient =
-        /timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|socket|HTTP 5\d\d|HTTP 429/i.test(msg);
+        err instanceof LLMError
+          ? err.code === 'timeout' || err.code === 'transient'
+          : /timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|socket|HTTP 5\d\d|HTTP 429/i.test(
+              err instanceof Error ? err.message : String(err)
+            );
       if (!isTransient || attempt === maxRetries) break;
       const backoff = Math.min(8000, 500 * 2 ** attempt);
       await sleep(backoff);
