@@ -1,4 +1,4 @@
-import { loadConfig, type LogLevel } from './config.js';
+import type { LogLevel } from './config.js';
 
 /**
  * Safe logger.
@@ -41,9 +41,16 @@ export function createLogger(configLevel?: LogLevel): Logger {
    * Strip prompt / secret-shaped fields from a log context before writing.
    * This is the "redact secrets in logs" requirement — defensive measure
    * so we never leak prompt text or credentials.
+   *
+   * Two layers of matching:
+   * - Exact names for prompt-content fields (the gate's domain objects).
+   * - Pattern match for credential-shaped names (api_key, apiKey,
+   *   access_token, authorization, secret, ...) so variants are covered.
+   *   Word boundaries prevent false positives such as `maxTokens`.
    */
   function sanitize(ctx: Record<string, unknown>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
+    const sensitiveName = /(^|[_-])(api_?key|secret|token|password|passwd|authorization|auth|bearer|credential)([_-]|$)/i;
     for (const [k, v] of Object.entries(ctx)) {
       const lk = k.toLowerCase();
       if (
@@ -51,10 +58,8 @@ export function createLogger(configLevel?: LogLevel): Logger {
         lk === 'original_prompt' ||
         lk === 'rewritten_prompt' ||
         lk === 'selected_prompt' ||
-        lk === 'api_key' ||
-        lk === 'apikey' ||
-        lk === 'secret' ||
-        lk === 'token'
+        lk === 'feedback' ||
+        sensitiveName.test(lk)
       ) {
         out[k] = '<redacted>';
         continue;
@@ -70,9 +75,4 @@ export function createLogger(configLevel?: LogLevel): Logger {
     warn: (m, c) => write('warn', m, c),
     error: (m, c) => write('error', m, c),
   };
-}
-
-export function getLogger(): Logger {
-  const cfg = loadConfig();
-  return createLogger(cfg.logLevel);
 }

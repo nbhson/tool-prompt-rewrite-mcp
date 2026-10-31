@@ -75,7 +75,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // Merge passthrough fields (e.g. enable_thinking for qwen3/llama.cpp).
       if (this.cfg.extraBody) Object.assign(body, this.cfg.extraBody);
 
-      const res = await fetch(`${this.cfg.baseUrl}/chat/completions`, {
+      // Normalize the baseUrl: tolerate a trailing slash so the endpoint
+      // is always `<base>/chat/completions` with a single separator.
+      const base = this.cfg.baseUrl.replace(/\/+$/, '');
+      const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

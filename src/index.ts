@@ -47,7 +47,8 @@ function findEnvFile(cwd: string, scriptDir: string): string {
   if (explicit && existsSync(explicit)) return explicit;
   const cwdFile = join(cwd, '.env');
   if (existsSync(cwdFile)) return cwdFile;
-  return join(scriptDir, '..', '.env'); // last resort; loadEnvFile no-ops if absent
+  // Last resort: `.env` next to the package (loadEnvFile no-ops if absent).
+  return join(scriptDir, '..', '.env');
 }
 
 /**
