@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { handleRewritePrompt } from '../src/tools/rewritePrompt.js';
 import { handleGetClientCapabilities } from '../src/tools/getClientCapabilities.js';
 import { RewriteService } from '../src/rewrite/rewrite.js';
+import { LLMError } from '../src/llm/provider.js';
 import { MockProvider, type MockBehavior } from './fixtures/llm-mocks.js';
 import { createLogger } from '../src/logger.js';
 import { detectCapabilities } from '../src/capability/capability.js';
@@ -69,12 +70,28 @@ describe('handleRewritePrompt', () => {
     expect(res.structuredContent?.error).toBe('llm_timeout');
   });
 
-  it('empty completion maps to llm_malformed_output', async () => {
+  it('plain LLM failure (wrapped as fatal code) maps to llm_unavailable', async () => {
     const res = await handleRewritePrompt(
       makeRewrite({ kind: 'throw', error: 'LLM returned an empty completion.' }),
       quiet,
       validInput
     );
+    // A plain Error thrown by the provider is wrapped by RewriteService as a
+    // 'fatal' LLMError → llm_unavailable. True malformed detection requires a
+    // typed LLMError (code: 'malformed') — covered by the next test.
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toBe('llm_unavailable');
+  });
+
+  it('LLMError with code malformed maps to llm_malformed_output', async () => {
+    const bad = new RewriteService({
+      isConfigured: () => true,
+      chat: async () => {
+        throw new LLMError('LLM returned an empty completion.', new Error('empty'), 1, 'malformed');
+      },
+    });
+    const res = await handleRewritePrompt(bad, quiet, validInput);
+    expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toBe('llm_malformed_output');
   });
 

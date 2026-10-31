@@ -1,69 +1,84 @@
 /**
- * Unit tests for SessionManager (session & pending-approval bookkeeping).
+ * Unit tests for PendingReviewStore (text-echo fallback state).
+ *
+ * The store keeps pending_user_selection state between the gate tool's
+ * rewrite step and the agent's relay re-call, so the server can verify
+ * that the approved text is EXACTLY what the user saw.
  */
 
 import { describe, it, expect } from 'vitest';
-import { SessionManager } from '../src/session/session.js';
+import { PendingReviewStore, PENDING_REVIEW_TTL_MS } from '../src/session/session.js';
+import type { PendingReview } from '../src/session/session.js';
 
-describe('SessionManager', () => {
-  it('newSession creates an isolated pending map per session', () => {
-    const sm = new SessionManager();
-    const a = sm.newSession();
-    const b = sm.newSession();
-    expect(a).not.toBe(b);
-    expect(sm.getSession(a)?.size).toBe(0);
-    expect(sm.getSession(b)?.size).toBe(0);
+function sampleReview(): Omit<PendingReview, 'id' | 'createdAt'> {
+  return {
+    originalPrompt: 'Fix the login bug',
+    rewrittenPrompt: '**Mục tiêu**\nFix the login bug in module X.',
+    changesSummary: 'Added goal heading and acceptance criteria.',
+    level: 'balanced',
+    language: 'vietnamese',
+    context: 'Session about auth.',
+    revisionCount: 0,
+  };
+}
+
+describe('PendingReviewStore', () => {
+  it('create returns a unique id and get returns the stored review', () => {
+    const store = new PendingReviewStore();
+    const id1 = store.create(sampleReview());
+    const id2 = store.create(sampleReview());
+
+    expect(id1).not.toBe(id2);
+    const review = store.get(id1);
+    expect(review?.originalPrompt).toBe('Fix the login bug');
+    expect(review?.level).toBe('balanced');
+    expect(review?.revisionCount).toBe(0);
+    expect(typeof review?.createdAt).toBe('number');
   });
 
-  it('addPending registers an unresolved pending request; unknown session throws', () => {
-    const sm = new SessionManager();
-    const sid = sm.newSession();
-    const pid = sm.addPending(sid);
-    expect(pid).toBeTruthy();
-    const pending = sm.getSession(sid);
-    expect(pending?.get(pid)?.resolved).toBe(false);
-    expect(() => sm.addPending('nope')).toThrow(/Unknown session/);
+  it('get returns undefined for unknown ids', () => {
+    const store = new PendingReviewStore();
+    expect(store.get('nope')).toBeUndefined();
   });
 
-  it('resolvePending marks the entry resolved; unknown ids are no-ops', () => {
-    const sm = new SessionManager();
-    const sid = sm.newSession();
-    const pid = sm.addPending(sid);
-    sm.resolvePending(sid, pid);
-    expect(sm.getSession(sid)?.get(pid)?.resolved).toBe(true);
-    // Unknown session / pending id: must not throw.
-    expect(() => sm.resolvePending('nope', pid)).not.toThrow();
-    expect(() => sm.resolvePending(sid, 'nope')).not.toThrow();
+  it('remove drops the entry; subsequent get returns undefined', () => {
+    const store = new PendingReviewStore();
+    const id = store.create(sampleReview());
+    expect(store.size).toBe(1);
+    store.remove(id);
+    expect(store.get(id)).toBeUndefined();
+    expect(store.size).toBe(0);
   });
 
-  it('cleanupAbandoned removes only old unresolved requests and returns the count', () => {
-    const sm = new SessionManager();
-    const sid = sm.newSession();
-    const old = sm.addPending(sid);
-    // Backdate the first request so it is older than the TTL.
-    const entry = sm.getSession(sid)?.get(old);
-    if (entry) entry.createdAt = Date.now() - 10_000;
-    const fresh = sm.addPending(sid);
-    const resolvedOld = sm.addPending(sid);
-    if (sm.getSession(sid)?.get(resolvedOld)) sm.resolvePending(sid, resolvedOld);
-
-    const removed = sm.cleanupAbandoned(sid, 5_000);
-    expect(removed).toBe(1);
-    expect(sm.getSession(sid)?.has(old)).toBe(false);
-    expect(sm.getSession(sid)?.has(fresh)).toBe(true);
-    expect(sm.getSession(sid)?.has(resolvedOld)).toBe(true); // resolved ones stay
+  it('remove on unknown id is a no-op', () => {
+    const store = new PendingReviewStore();
+    expect(() => store.remove('nope')).not.toThrow();
   });
 
-  it('cleanupAbandoned on unknown session returns 0', () => {
-    const sm = new SessionManager();
-    expect(sm.cleanupAbandoned('nope', 1000)).toBe(0);
+  it('expired entries are purged on access', () => {
+    const store = new PendingReviewStore(10); // 10 ms TTL
+    const id = store.create(sampleReview());
+    vi_wait(15);
+    expect(store.get(id)).toBeUndefined();
+    expect(store.size).toBe(0);
   });
 
-  it('closeSession drops the session entirely', () => {
-    const sm = new SessionManager();
-    const sid = sm.newSession();
-    sm.addPending(sid);
-    sm.closeSession(sid);
-    expect(sm.getSession(sid)).toBeUndefined();
+  it('non-expired entries survive purging', () => {
+    const store = new PendingReviewStore(10_000);
+    const id = store.create(sampleReview());
+    vi_wait(15);
+    expect(store.get(id)?.id).toBe(id);
+  });
+
+  it('default TTL is 30 minutes', () => {
+    expect(PENDING_REVIEW_TTL_MS).toBe(30 * 60 * 1000);
   });
 });
+
+/** Tiny helper: busy-wait the given number of milliseconds (test only). */
+function vi_wait(ms: number): void {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    // spin
+  }
+}
