@@ -35,7 +35,6 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RewriteService } from '../rewrite/rewrite.js';
-import { LLMError } from '../rewrite/rewrite.js';
 import {
   elicitChoice,
   type ElicitCall,
@@ -46,6 +45,7 @@ import { GateError, type ReviewResult, type PromptSelection, type RewriteLevel }
 import type { Logger } from '../logger.js';
 import type { ClientCapabilities } from '../capability/capability.js';
 import { PendingReviewStore, type PendingReview } from '../session/session.js';
+import { normalizeGateError } from './gateErrors.js';
 
 export const SELECTION_VALUES: readonly PromptSelection[] = ['original', 'rewritten', 'update', 'cancel'];
 export const LEVEL_VALUES: readonly RewriteLevel[] = ['light', 'balanced', 'detailed'];
@@ -1033,22 +1033,3 @@ export function registerReviewAndSelectTool(deps: ReviewDeps): void {
   );
 }
 
-function normalizeGateError(err: unknown, requestId: string): GateError {
-  if (err instanceof GateError) return err;
-  if (err instanceof LLMError) {
-    // Typed code first (robust); keep a message fallback for LLMErrors
-    // constructed without a code (e.g. policy-file errors).
-    const kind =
-      err.code === 'timeout'
-        ? 'llm_timeout'
-        : err.code === 'malformed'
-          ? 'llm_malformed_output'
-          : err.code === 'transient' || err.code === 'fatal'
-            ? 'llm_unavailable'
-            : err.message.toLowerCase().includes('timed out')
-              ? 'llm_timeout'
-              : 'llm_unavailable';
-    return new GateError(kind, err.message, { requestId, elapsedMs: err.elapsedMs });
-  }
-  return new GateError('unknown', err instanceof Error ? err.message : String(err), { requestId });
-}

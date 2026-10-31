@@ -10,9 +10,9 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RewriteService } from '../rewrite/rewrite.js';
-import { LLMError } from '../rewrite/rewrite.js';
-import { GateError, type RewriteLevel } from '../types.js';
+import type { RewriteLevel } from '../types.js';
 import type { Logger } from '../logger.js';
+import { normalizeGateError } from './gateErrors.js';
 
 export const RewritePromptInputSchema = z.object({
   prompt: z
@@ -55,6 +55,75 @@ export const RewritePromptInputSchema = z.object({
 
 export type RewritePromptInput = z.infer<typeof RewritePromptInputSchema>;
 
+/**
+ * Core handler logic, separated from MCP tool registration so it can be
+ * unit-tested without a live MCP server connection (same pattern as
+ * `handleReviewAndSelect`).
+ */
+export async function handleRewritePrompt(
+  rewrite: RewriteService,
+  log: Logger,
+  rawInput: unknown
+): Promise<{
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+}> {
+  const input = RewritePromptInputSchema.parse(rawInput);
+  const requestId = randomUUID().slice(0, 8);
+  const start = Date.now();
+
+  try {
+    log.info('rewrite_prompt: started', {
+      requestId,
+      level: input.rewrite_level ?? 'balanced',
+      promptLen: input.prompt.length,
+    });
+
+    const result = await rewrite.rewrite(input.prompt, {
+      level: (input.rewrite_level ?? 'balanced') as RewriteLevel,
+      language: input.language,
+      context: input.context,
+    });
+
+    log.info('rewrite_prompt: done', { requestId, elapsedMs: Date.now() - start });
+
+    const text = [
+      `Original:\n${result.originalPrompt}`,
+      ``,
+      `Rewritten:\n${result.rewrittenPrompt}`,
+      ``,
+      `Changes: ${result.changesSummary}`,
+      result.warnings?.length ? `\nWarnings:\n- ${result.warnings.join('\n- ')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return {
+      content: [{ type: 'text', text }],
+      structuredContent: {
+        original_prompt: result.originalPrompt,
+        rewritten_prompt: result.rewrittenPrompt,
+        changes_summary: result.changesSummary,
+        ...(result.warnings ? { warnings: result.warnings } : {}),
+      },
+    };
+  } catch (err) {
+    const ge = normalizeGateError(err, requestId);
+    log.error('rewrite_prompt: failed', {
+      requestId,
+      kind: ge.kind,
+      message: ge.message,
+      elapsedMs: Date.now() - start,
+    });
+    return {
+      content: [{ type: 'text', text: `Error: ${ge.message}` }],
+      isError: true,
+      structuredContent: { error: ge.kind, message: ge.message },
+    };
+  }
+}
+
 export function registerRewritePromptTool(server: McpServer, rewrite: RewriteService, log: Logger): void {
   server.registerTool(
     'rewrite_prompt',
@@ -85,74 +154,7 @@ export function registerRewritePromptTool(server: McpServer, rewrite: RewriteSer
         rewrite_level: RewritePromptInputSchema.shape.rewrite_level,
       },
     },
-    async (rawInput) => {
-      const input = RewritePromptInputSchema.parse(rawInput);
-      const requestId = randomUUID().slice(0, 8);
-      const start = Date.now();
-
-      try {
-        log.info('rewrite_prompt: started', {
-          requestId,
-          level: input.rewrite_level ?? 'balanced',
-          promptLen: input.prompt.length,
-        });
-
-        const result = await rewrite.rewrite(input.prompt, {
-          level: (input.rewrite_level ?? 'balanced') as RewriteLevel,
-          language: input.language,
-          context: input.context,
-        });
-
-        log.info('rewrite_prompt: done', { requestId, elapsedMs: Date.now() - start });
-
-        const text = [
-          `Original:\n${result.originalPrompt}`,
-          ``,
-          `Rewritten:\n${result.rewrittenPrompt}`,
-          ``,
-          `Changes: ${result.changesSummary}`,
-          result.warnings?.length ? `\nWarnings:\n- ${result.warnings.join('\n- ')}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n');
-
-        return {
-          content: [{ type: 'text', text }],
-          structuredContent: {
-            original_prompt: result.originalPrompt,
-            rewritten_prompt: result.rewrittenPrompt,
-            changes_summary: result.changesSummary,
-            ...(result.warnings ? { warnings: result.warnings } : {}),
-          },
-        };
-      } catch (err) {
-        const ge = normalizeGateError(err, requestId);
-        log.error('rewrite_prompt: failed', {
-          requestId,
-          kind: ge.kind,
-          message: ge.message,
-          elapsedMs: Date.now() - start,
-        });
-        return {
-          content: [{ type: 'text', text: `Error: ${ge.message}` }],
-          isError: true,
-          structuredContent: { error: ge.kind, message: ge.message },
-        };
-      }
-    }
+    async (rawInput) => handleRewritePrompt(rewrite, log, rawInput)
   );
 }
 
-function normalizeGateError(err: unknown, requestId: string): GateError {
-  if (err instanceof GateError) return err;
-  if (err instanceof LLMError) {
-    const kind =
-      err.code === 'timeout'
-        ? 'llm_timeout'
-        : err.code === 'malformed'
-          ? 'llm_malformed_output'
-          : 'llm_unavailable';
-    return new GateError(kind, err.message, { requestId, elapsedMs: err.elapsedMs });
-  }
-  return new GateError('unknown', err instanceof Error ? err.message : String(err), { requestId });
-}

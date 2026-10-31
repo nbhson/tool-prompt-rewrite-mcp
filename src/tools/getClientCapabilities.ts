@@ -11,6 +11,42 @@ import type { ClientCapabilities } from '../capability/capability.js';
 import type { Logger } from '../logger.js';
 
 /**
+ * Core handler logic, separated from MCP tool registration so it can be
+ * unit-tested without a live MCP server connection.
+ */
+export function handleGetClientCapabilities(
+  detect: () => ClientCapabilities,
+  log: Logger
+): {
+  content: { type: 'text'; text: string }[];
+  structuredContent: Record<string, unknown>;
+} {
+  const caps = detect();
+  log.info('get_client_capabilities', {
+    elicitation: caps.elicitationSupported,
+    structured: caps.structuredElicitationSupported,
+    transport: caps.transport,
+    mode: caps.integrationMode,
+    mandatory: caps.mandatoryGatingEnforceable,
+  });
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(caps, null, 2),
+      },
+    ],
+    structuredContent: {
+      elicitation_supported: caps.elicitationSupported,
+      structured_elicitation_supported: caps.structuredElicitationSupported,
+      transport: caps.transport,
+      integration_mode: caps.integrationMode,
+      mandatory_gating_enforceable: caps.mandatoryGatingEnforceable,
+    },
+  };
+}
+
+/**
  * Build a factory for the capabilities tool. The `detect` function is
  * injected so tests can stub out the real protocol negotiation.
  */
@@ -31,30 +67,6 @@ export function registerGetClientCapabilitiesTool(
         'from the agent name.',
       inputSchema: {},
     },
-    async () => {
-      const caps = detect();
-      log.info('get_client_capabilities', {
-        elicitation: caps.elicitationSupported,
-        structured: caps.structuredElicitationSupported,
-        transport: caps.transport,
-        mode: caps.integrationMode,
-        mandatory: caps.mandatoryGatingEnforceable,
-      });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(caps, null, 2),
-          },
-        ],
-        structuredContent: {
-          elicitation_supported: caps.elicitationSupported,
-          structured_elicitation_supported: caps.structuredElicitationSupported,
-          transport: caps.transport,
-          integration_mode: caps.integrationMode,
-          mandatory_gating_enforceable: caps.mandatoryGatingEnforceable,
-        },
-      };
-    }
+    async () => handleGetClientCapabilities(detect, log)
   );
 }
